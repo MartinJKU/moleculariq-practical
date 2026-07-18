@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=miq-data
-#SBATCH --account=<ACCOUNT>          # your CINECA project account ('saldo -b'), or: sbatch -A <account> ...
+#SBATCH --account=EUHPC_D27_069          # your CINECA project account ('saldo -b'), or: sbatch -A <account> ...
 #SBATCH --partition=lrd_all_serial   # serial partition: CPU-only, fine for dataset generation
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1

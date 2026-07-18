@@ -61,8 +61,8 @@ src/moleculariq_grpo/
 bash scripts/setup_leonardo.sh          # venv in $WORK, pinned dependencies
 bash scripts/download_assets.sh         # model + pool + benchmark into $HF_HOME
 
-# Edit slurm/*.slurm once: set  #SBATCH --account=<ACCOUNT>  (see 'saldo -b'),
-# or pass it at submit time:  sbatch -A <account> ...
+# The slurm/*.slurm files are set to  #SBATCH --account=EUHPC_D27_069
+# (override at submit time with:  sbatch -A <account> ...)
 
 # 1) CREATE THE DATASETS FIRST (compute nodes are offline; pool is pre-cached)
 sbatch slurm/create_datasets.slurm --task count      --out data/count

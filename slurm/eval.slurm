@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=miq-eval
-#SBATCH --account=<ACCOUNT>        # your CINECA project account ('saldo -b'), or: sbatch -A <account> ...
+#SBATCH --account=EUHPC_D27_069        # your CINECA project account ('saldo -b'), or: sbatch -A <account> ...
 #SBATCH --partition=boost_usr_prod
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
