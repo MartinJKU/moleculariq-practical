@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# generated artifacts
+data/
+outputs/
+results/
+runs/
+wandb/
+hf_cache/
+*.samples.jsonl
+
+# SLURM logs, but keep the dir so #SBATCH --output=logs/... works at submit time
+logs/*
+!logs/.gitkeep

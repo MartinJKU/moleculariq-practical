@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moleculariq-grpo"
+version = "0.1.0"
+description = "GRPO training of Qwen2.5-0.5B-Instruct on MolecularIQ tasks (TRL + vLLM)"
+requires-python = ">=3.10"
+dependencies = [
+    "moleculariq-core @ git+https://github.com/ml-jku/moleculariq-core.git@a1b89635371c3cd942e44ebeec63ec3665e7743d",
+    "datasets>=4.7.0",
+    "pyyaml",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

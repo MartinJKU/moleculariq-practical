@@ -1,0 +1,44 @@
+# GRPO on single_count questions (all count constructs)
+# Run:  python scripts/train_grpo.py --config configs/count.yaml
+model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+dataset_dir: data/count
+output_dir: outputs/count-qwen2.5-0.5b
+
+# Reward = official MolecularIQ verifier (binary) + small format-shaping term.
+correctness_weight: 1.0
+format_weight: 0.2      # set to 0.0 to train on pure correctness
+
+grpo:
+  output_dir: outputs/count-qwen2.5-0.5b
+  # --- batching / rollouts -------------------------------------------------
+  # generation batch = per_device_train_batch_size x n_gpus x grad_accum
+  # and must be divisible by num_generations.
+  # 1 GPU: 64 x 1 x 4 = 256 completions = 16 prompts x 16 generations.
+  # On 4 GPUs set gradient_accumulation_steps: 1 (64 x 4 x 1 = 256).
+  per_device_train_batch_size: 64
+  gradient_accumulation_steps: 4
+  num_generations: 16
+  max_completion_length: 512
+  temperature: 1.0
+  top_p: 1.0
+  # --- optimization (full fine-tune) --------------------------------------
+  learning_rate: 1.0e-6
+  lr_scheduler_type: constant_with_warmup
+  warmup_steps: 20
+  max_steps: 500
+  max_grad_norm: 1.0
+  beta: 0.0                     # no KL penalty -> no reference model in memory
+  # loss_type: dapo             # TRL 1.8 default; uncomment to pin explicitly
+  bf16: true
+  gradient_checkpointing: true
+  # --- vLLM rollouts -------------------------------------------------------
+  use_vllm: true
+  vllm_mode: colocate           # rollouts + training share each GPU
+  vllm_gpu_memory_utilization: 0.25
+  vllm_max_model_length: 2048
+  # --- logging / checkpoints ----------------------------------------------
+  logging_steps: 1
+  save_steps: 100
+  save_total_limit: 3
+  report_to: ["tensorboard"]
+  seed: 42

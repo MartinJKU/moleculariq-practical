@@ -1,0 +1,14 @@
+# Pinned, mutually compatible stack (verified July 2026).
+# TRL 1.8.0 supports vllm >=0.16.0,<=0.23.0 ; vllm 0.23.0 pins torch 2.11.0.
+# Install on a Leonardo LOGIN node (internet) via scripts/setup_leonardo.sh.
+trl==1.8.0
+vllm==0.23.0
+transformers==5.14.1
+datasets==5.0.0
+accelerate==1.14.0
+pyyaml
+tensorboard
+# MolecularIQ verifier / question generator (pinned commit for reproducibility)
+moleculariq-core @ git+https://github.com/ml-jku/moleculariq-core.git@a1b89635371c3cd942e44ebeec63ec3665e7743d
+# rdkit is pulled in by moleculariq-core; pinned here for reproducibility
+rdkit==2026.3.4

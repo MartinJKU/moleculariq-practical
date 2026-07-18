@@ -1,0 +1,34 @@
+# GRPO on single-constraint molecule generation questions
+# Run:  python scripts/train_grpo.py --config configs/constraint.yaml
+model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+dataset_dir: data/constraint
+output_dir: outputs/constraint-qwen2.5-0.5b
+
+correctness_weight: 1.0
+format_weight: 0.2
+
+grpo:
+  output_dir: outputs/constraint-qwen2.5-0.5b
+  per_device_train_batch_size: 64
+  gradient_accumulation_steps: 4      # set to 1 on 4 GPUs
+  num_generations: 16
+  max_completion_length: 512
+  temperature: 1.0
+  top_p: 1.0
+  learning_rate: 1.0e-6
+  lr_scheduler_type: constant_with_warmup
+  warmup_steps: 20
+  max_steps: 500
+  max_grad_norm: 1.0
+  beta: 0.0
+  bf16: true
+  gradient_checkpointing: true
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.25
+  vllm_max_model_length: 2048
+  logging_steps: 1
+  save_steps: 100
+  save_total_limit: 3
+  report_to: ["tensorboard"]
+  seed: 42
