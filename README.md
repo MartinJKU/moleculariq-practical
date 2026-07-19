@@ -149,34 +149,41 @@ harness against the trained checkpoint; prompts/extraction here match it.
 
 ## Environment / pinned versions
 
-Installed by `scripts/setup_leonardo.sh` from `requirements.txt` (verified
-mutually compatible: TRL 1.8.0 supports vLLM 0.16.0–0.23.0):
+Installed by `scripts/setup_leonardo.sh` from `requirements.txt`:
 
 | Package | Version |
 |---|---|
-| trl | 1.8.0 |
-| vllm | 0.21.0 |
-| torch | 2.11.0+cu128 (CUDA 12.8 build) |
-| transformers | 5.14.1 |
+| trl | 1.2.0 |
+| vllm | 0.11.2 |
+| torch | 2.9.0 (PyPI default = CUDA 12.8) |
+| transformers | 4.57.6 |
 | datasets | 5.0.0 |
 | accelerate | 1.14.0 |
 | moleculariq-core | pinned git commit `a1b8963` |
 
-> **Why exactly vLLM 0.21.0 + torch+cu128:** Leonardo Booster imposes two hard
-> constraints at once, and they rule out most recent wheels:
-> 1. **Driver 535.x = CUDA 12 only.** A CUDA-13 build crashes at torch init with
->    `RuntimeError: The NVIDIA driver on your system is too old (found version 12020)`.
+> **Why this specific (older) stack:** Leonardo Booster imposes two hard
+> constraints at once that eliminate every recent vLLM wheel:
+> 1. **Driver 535.x = CUDA 12 only.** A CUDA-13 build fails to import with
+>    `ImportError: libcudart.so.13: cannot open shared object file` (vLLM's `_C`
+>    extension), or crashes torch init with
+>    `The NVIDIA driver on your system is too old (found version 12020)`.
 > 2. **RHEL 8 = glibc 2.28.** A wheel tagged `manylinux_2_31`/`_2_35` has no
 >    usable build, so pip falls back to a source build → `CUDA_HOME is not set`.
 >
-> vLLM ≤ 0.19 is CUDA-12 but `manylinux_2_31` (glibc too new); vLLM 0.22+ is
-> `manylinux_2_28` but depends on `nvidia-cutlass-dsl[cu13]` (CUDA 13). **vLLM
-> 0.21.0** is the one release that is both `manylinux_2_24` (installs on glibc
-> 2.28) **and** free of cu13 deps. We pair it with the **CUDA-12.8 build of
-> torch 2.11.0** (`torch==2.11.0+cu128` from PyTorch's cu128 index — driver ≥ 525
-> via CUDA minor-version compatibility, so it runs on 535). `requirements.txt`
-> carries the `--extra-index-url` for the cu128 wheels. Don't bump vLLM/torch
-> until CINECA upgrades the driver to ≥ 580.
+> Every vLLM ≥ 0.20 links `libcudart.so.13`; every CUDA-12 vLLM in the 0.12–0.19
+> range ships only `manylinux_2_31` wheels (glibc too new). **vLLM 0.11.2** is
+> the sweet spot: its wheel is `manylinux1` (installs on any glibc) **and** it
+> links `libcudart.so.12`. It pins **torch 2.9.0**, whose default PyPI wheel is
+> already the CUDA-12.8 build (runs on the 535 driver via CUDA minor-version
+> compatibility — needs driver ≥ 525), so no special index is required.
+>
+> vLLM 0.11.2 sits outside TRL 1.8's window, so TRL steps down to **1.2.0**
+> (supports vLLM 0.11–0.18) and transformers to **4.57.x** (vLLM 0.11.2 needs
+> `transformers<5`; TRL 1.2.0 needs `>=4.56.2`). The training/eval/reward code
+> here runs unchanged on this stack — verified: all GRPOConfig keys, dataset-
+> column forwarding to the reward functions, checkpointing, and the
+> `trl vllm-serve` CLI. Don't bump this stack until CINECA raises the driver to
+> ≥ 580 (which unlocks vLLM ≥ 0.20 + torch 2.11 + TRL 1.8).
 
 Leonardo notes ([CINECA docs](https://docs.hpc.cineca.it/hpc/leonardo.html)):
 
