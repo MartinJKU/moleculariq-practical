@@ -155,20 +155,28 @@ mutually compatible: TRL 1.8.0 supports vLLM 0.16.0–0.23.0):
 | Package | Version |
 |---|---|
 | trl | 1.8.0 |
-| vllm | 0.19.1 |
-| torch | 2.10.0 (CUDA 12.8 build) |
+| vllm | 0.21.0 |
+| torch | 2.11.0+cu128 (CUDA 12.8 build) |
 | transformers | 5.14.1 |
 | datasets | 5.0.0 |
 | accelerate | 1.14.0 |
 | moleculariq-core | pinned git commit `a1b8963` |
 
-> **Why vLLM 0.19.1 and not newer:** Leonardo Booster nodes run NVIDIA driver
-> 535.x (CUDA 12.2). vLLM ≥ 0.20.0 pins torch 2.11.0, whose default wheels are
-> **CUDA-13** builds requiring driver ≥ 580 — they crash on Leonardo with
-> `RuntimeError: The NVIDIA driver on your system is too old (found version 12020)`.
-> vLLM 0.19.1 pins torch 2.10.0 (CUDA-12.8 wheels, driver ≥ 525 via CUDA
-> minor-version compatibility), which runs on the 535 driver. Don't bump vLLM
-> past 0.19.x until CINECA upgrades the driver to ≥ 580.
+> **Why exactly vLLM 0.21.0 + torch+cu128:** Leonardo Booster imposes two hard
+> constraints at once, and they rule out most recent wheels:
+> 1. **Driver 535.x = CUDA 12 only.** A CUDA-13 build crashes at torch init with
+>    `RuntimeError: The NVIDIA driver on your system is too old (found version 12020)`.
+> 2. **RHEL 8 = glibc 2.28.** A wheel tagged `manylinux_2_31`/`_2_35` has no
+>    usable build, so pip falls back to a source build → `CUDA_HOME is not set`.
+>
+> vLLM ≤ 0.19 is CUDA-12 but `manylinux_2_31` (glibc too new); vLLM 0.22+ is
+> `manylinux_2_28` but depends on `nvidia-cutlass-dsl[cu13]` (CUDA 13). **vLLM
+> 0.21.0** is the one release that is both `manylinux_2_24` (installs on glibc
+> 2.28) **and** free of cu13 deps. We pair it with the **CUDA-12.8 build of
+> torch 2.11.0** (`torch==2.11.0+cu128` from PyTorch's cu128 index — driver ≥ 525
+> via CUDA minor-version compatibility, so it runs on 535). `requirements.txt`
+> carries the `--extra-index-url` for the cu128 wheels. Don't bump vLLM/torch
+> until CINECA upgrades the driver to ≥ 580.
 
 Leonardo notes ([CINECA docs](https://docs.hpc.cineca.it/hpc/leonardo.html)):
 
