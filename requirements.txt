@@ -1,8 +1,18 @@
 # Pinned, mutually compatible stack (verified July 2026).
-# TRL 1.8.0 supports vllm >=0.16.0,<=0.23.0 ; vllm 0.23.0 pins torch 2.11.0.
+# TRL 1.8.0 supports vllm >=0.16.0,<=0.23.0.
+#
+# IMPORTANT — Leonardo driver constraint: the Booster nodes run NVIDIA driver
+# 535.x (CUDA 12.2). vllm >= 0.20.0 pins torch 2.11.0, whose default wheels
+# are CUDA-13 builds that REQUIRE driver >= 580 and fail on Leonardo with
+# "The NVIDIA driver on your system is too old (found version 12020)".
+# vllm 0.19.1 pins torch 2.10.0, whose default wheels are CUDA-12.8 builds
+# (driver >= 525 via CUDA minor-version compatibility) — these run on 535.
+# Do not bump vllm past 0.19.x until Leonardo's driver is >= 580.
+#
 # Install on a Leonardo LOGIN node (internet) via scripts/setup_leonardo.sh.
 trl==1.8.0
-vllm==0.23.0
+vllm==0.19.1
+torch==2.10.0
 transformers==5.14.1
 datasets==5.0.0
 accelerate==1.14.0

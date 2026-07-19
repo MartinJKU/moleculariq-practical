@@ -150,17 +150,25 @@ harness against the trained checkpoint; prompts/extraction here match it.
 ## Environment / pinned versions
 
 Installed by `scripts/setup_leonardo.sh` from `requirements.txt` (verified
-mutually compatible: TRL 1.8.0 supports vLLM ≤ 0.23.0; vLLM 0.23.0 pins
-torch 2.11.0):
+mutually compatible: TRL 1.8.0 supports vLLM 0.16.0–0.23.0):
 
 | Package | Version |
 |---|---|
 | trl | 1.8.0 |
-| vllm | 0.23.0 |
+| vllm | 0.19.1 |
+| torch | 2.10.0 (CUDA 12.8 build) |
 | transformers | 5.14.1 |
 | datasets | 5.0.0 |
 | accelerate | 1.14.0 |
 | moleculariq-core | pinned git commit `a1b8963` |
+
+> **Why vLLM 0.19.1 and not newer:** Leonardo Booster nodes run NVIDIA driver
+> 535.x (CUDA 12.2). vLLM ≥ 0.20.0 pins torch 2.11.0, whose default wheels are
+> **CUDA-13** builds requiring driver ≥ 580 — they crash on Leonardo with
+> `RuntimeError: The NVIDIA driver on your system is too old (found version 12020)`.
+> vLLM 0.19.1 pins torch 2.10.0 (CUDA-12.8 wheels, driver ≥ 525 via CUDA
+> minor-version compatibility), which runs on the 535 driver. Don't bump vLLM
+> past 0.19.x until CINECA upgrades the driver to ≥ 580.
 
 Leonardo notes ([CINECA docs](https://docs.hpc.cineca.it/hpc/leonardo.html)):
 
@@ -171,8 +179,9 @@ Leonardo notes ([CINECA docs](https://docs.hpc.cineca.it/hpc/leonardo.html)):
   (normal QOS); `boost_qos_dbg` for 30-minute debug runs.
 - Venv + HF cache live under `$WORK/$USER` (override `MIQ_HOME`/`HF_HOME`
   before sourcing `scripts/env_leonardo.sh`).
-- No CUDA module needed: the pip wheels bundle the CUDA runtime (driver on
-  the nodes is sufficient).
+- No CUDA module needed: the pip wheels bundle the CUDA runtime — but the
+  bundled CUDA **major** version must match what the node driver supports
+  (driver 535 = CUDA 12.x only; see the version-pin note above).
 
 ## Citation
 
