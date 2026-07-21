@@ -9,8 +9,8 @@ format_weight: 0.2
 
 grpo:
   output_dir: outputs/constraint-qwen2.5-0.5b
-  per_device_train_batch_size: 64
-  gradient_accumulation_steps: 4      # set to 1 on 4 GPUs
+  per_device_train_batch_size: 16    # larger OOMs 64GB A100 (logits are batch x len x 152k vocab)
+  gradient_accumulation_steps: 16    # set to 4 on 4 GPUs
   num_generations: 16
   max_completion_length: 512
   temperature: 1.0
