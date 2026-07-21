@@ -12,7 +12,7 @@
 #
 # GRPO training on a full Leonardo Booster node (4x A100 64GB), DDP with one
 # colocated vLLM engine per rank. Keeps the same effective generation batch as
-# the 1-GPU setup by reducing gradient accumulation to 1 (64 x 4 x 1 = 256).
+# the 1-GPU setup by reducing gradient accumulation to 4 (16 x 4 x 4 = 256).
 #
 # Submit FROM THE REPO ROOT:
 #     sbatch slurm/train_4gpu.slurm configs/count.yaml
@@ -32,5 +32,5 @@ accelerate launch \
     --mixed_precision bf16 \
     --dynamo_backend no \
     scripts/train_grpo.py --config "$CONFIG" \
-    --grpo.gradient_accumulation_steps 1 \
+    --grpo.gradient_accumulation_steps 4 \
     "$@"

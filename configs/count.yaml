@@ -13,10 +13,13 @@ grpo:
   # --- batching / rollouts -------------------------------------------------
   # generation batch = per_device_train_batch_size x n_gpus x grad_accum
   # and must be divisible by num_generations.
-  # 1 GPU: 64 x 1 x 4 = 256 completions = 16 prompts x 16 generations.
-  # On 4 GPUs set gradient_accumulation_steps: 1 (64 x 4 x 1 = 256).
-  per_device_train_batch_size: 64
-  gradient_accumulation_steps: 4
+  # 1 GPU: 16 x 1 x 16 = 256 completions = 16 prompts x 16 generations.
+  # On 4 GPUs set gradient_accumulation_steps: 4 (16 x 4 x 4 = 256).
+  # Keep per_device_train_batch_size small: every logprob forward materializes
+  # logits of [batch, completion_len+1, 152k vocab] — at 64 that is an 18.6 GiB
+  # fp32 tensor, which OOMs the 64GB A100 next to the colocated vLLM engine.
+  per_device_train_batch_size: 16
+  gradient_accumulation_steps: 16
   num_generations: 16
   max_completion_length: 512
   temperature: 1.0
