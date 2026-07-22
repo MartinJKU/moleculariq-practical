@@ -36,6 +36,9 @@ datasets==5.0.0
 accelerate==1.14.0
 pyyaml
 tensorboard
+# Plotting for scripts/compare_evals.py (CPU-only; manylinux_2_17 wheels install
+# fine on Leonardo's glibc 2.28, and numpy is already pulled in by torch/vllm).
+matplotlib==3.10.0
 # MolecularIQ verifier / question generator (pinned commit for reproducibility)
 moleculariq-core @ git+https://github.com/ml-jku/moleculariq-core.git@a1b89635371c3cd942e44ebeec63ec3665e7743d
 # rdkit is pulled in by moleculariq-core; pinned here for reproducibility

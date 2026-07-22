@@ -34,10 +34,12 @@ constraints are verified correct).
 
 ```
 configs/                  # training configs (one per task / construct)
+  eval_matrix.yaml        # + models x eval sets for scripts/compare_evals.py
 scripts/
   create_datasets.py      # STEP 1: generate question datasets from the pool
   train_grpo.py           # STEP 2: GRPO training (TRL, full FT, vLLM rollouts)
   evaluate.py             # STEP 3: vLLM eval against any dataset + verifier metrics
+  compare_evals.py        # STEP 4: run the model x dataset eval matrix + plot it
   env_leonardo.sh         # shared Leonardo environment (modules, caches, offline mode)
   setup_leonardo.sh       # one-time venv setup (login node)
   download_assets.sh      # prefetch model + datasets for offline compute nodes
@@ -46,7 +48,8 @@ slurm/
   train.slurm             # 1x A100, vLLM colocate (default, known-good)
   train_4gpu.slurm        # full node, DDP + colocated vLLM per rank
   train_server_mode.slurm # optional: 3 train GPUs + 1 dedicated vLLM server GPU
-  eval.slurm              # evaluation job
+  eval.slurm              # evaluation job (single model x dataset)
+  eval_matrix.slurm       # STEP 4: whole baseline-vs-trained comparison + plots
 src/moleculariq_grpo/
   data.py                 # question generation in the official benchmark schema
   rewards.py              # TRL reward functions wrapping the official verifier
@@ -92,6 +95,10 @@ sbatch slurm/eval.slurm --model outputs/count-qwen2.5-0.5b \
 # Baseline for comparison:
 sbatch slurm/eval.slurm --model Qwen/Qwen2.5-0.5B-Instruct \
     --dataset data/count/val.jsonl --out results/count_val_baseline.json
+
+# 4) COMPARE baseline vs single-task models across every task at once
+#    (one GPU job runs the whole model x dataset matrix, then plots it)
+sbatch slurm/eval_matrix.slurm
 ```
 
 ## Dataset creation details
@@ -146,6 +153,59 @@ JSONL datasets *and* any official `ml-jku/moleculariq-v0.0` split
 For leaderboard-grade numbers on the full benchmark you can also run the
 official [moleculariq-eval](https://github.com/ml-jku/moleculariq-eval)
 harness against the trained checkpoint; prompts/extraction here match it.
+
+## Comparing baseline vs single-task models (`compare_evals.py`)
+
+`scripts/compare_evals.py` automates the whole single-task comparison: it
+evaluates **every model on every eval dataset** (the full cross product, one
+`evaluate.py` call per cell) and renders the figures and tables you need for
+the practical. One config, `configs/eval_matrix.yaml`, lists the models
+(baseline + each single-task checkpoint) and the eval sets; edit it to add or
+drop rows. Because a model is scored on *all* eval sets, one run answers both
+questions at once:
+
+- **Specialization** — each task-trained model vs the baseline on its own task
+  (the heatmap diagonal / the "own task" bars).
+- **Generalization** — each task-trained model on the *other* tasks, e.g. the
+  count model on index questions (the off-diagonal cells).
+
+```bash
+# On Leonardo (evaluate the matrix on 1 GPU, then plot):
+sbatch slurm/eval_matrix.slurm
+
+# Or drive it directly:
+python scripts/compare_evals.py all  --config configs/eval_matrix.yaml   # run + plot
+python scripts/compare_evals.py run  --config configs/eval_matrix.yaml   # evals only (GPU)
+python scripts/compare_evals.py plot --config configs/eval_matrix.yaml   # figures only (no GPU)
+
+# Preview what would run without launching vLLM:
+python scripts/compare_evals.py run --config configs/eval_matrix.yaml --dry-run
+# Only some models/evals:
+python scripts/compare_evals.py run --config configs/eval_matrix.yaml --models count index
+```
+
+Cells are cached as `results/matrix/<model>__<eval>.json`; **existing results
+are skipped**, so you can run the matrix now with whatever models have finished
+and re-submit later to fill in the rest (missing cells show as `–` in the
+plots). Models/datasets that don't exist yet are reported as "not ready" and
+skipped, not errored, so a partially-trained sweep still produces output.
+
+Figures land in `results/matrix/plots/` (`--formats png pdf`):
+
+| File | What it shows |
+|---|---|
+| `heatmap_<metric>.png` | models × eval sets, in-task cells outlined |
+| `heatmap_delta_vs_baseline.png` | same grid as Δ vs baseline (diverging red/blue) |
+| `bars_<metric>.png` | grouped bars, models side by side per eval set |
+| `specialization_vs_generalization.png` | per model: gain on its own task vs mean gain on the others |
+| `heatmap_complexity.png` | small multiples: accuracy per complexity bin, per eval set |
+| `heatmap_features__<eval>.png` | per-construct (`features`) accuracy, models side by side |
+| `summary.csv` / `summary.md` | every cell + Δ vs baseline as a table |
+
+The headline `metric` (default `avg_accuracy`; also `pass_at_1`, or `pass_at_3`
+when evals set `n: 3`) is set in the config or with `--metric`. The commented
+`official_*` blocks in the config add `ml-jku/moleculariq-v0.0` splits as extra
+columns (run `download_assets.sh` on a login node first).
 
 ## Environment / pinned versions
 

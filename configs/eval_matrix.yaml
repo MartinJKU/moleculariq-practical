@@ -1,0 +1,85 @@
+# Model x dataset evaluation matrix for scripts/compare_evals.py
+#
+#   python scripts/compare_evals.py run  --config configs/eval_matrix.yaml
+#   python scripts/compare_evals.py plot --config configs/eval_matrix.yaml
+#   python scripts/compare_evals.py all  --config configs/eval_matrix.yaml
+#   # on Leonardo:  sbatch slurm/eval_matrix.slurm
+#
+# Every model below is evaluated on every eval below (the full cross product),
+# so the same run covers in-task performance ("count model on count questions
+# vs baseline") AND cross-task generalization ("count model on index
+# questions"). Results land in `results_dir` as <model>__<eval>.json; existing
+# results are skipped, so re-running after another training finishes only
+# fills in the missing cells.
+
+metric: avg_accuracy        # headline metric for plots: avg_accuracy | pass_at_1 | pass_at_3
+results_dir: results/matrix
+plots_dir: results/matrix/plots
+baseline: baseline          # key in `models` used as the reference for delta plots
+
+# `task` links models to evals: a model is "in-task" on an eval when the two
+# tags match (those cells get outlined in the heatmaps and drive the
+# specialization-vs-generalization plot).
+models:
+  baseline:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+    label: Qwen 0.5B (untrained)
+  count:
+    path: outputs/count-qwen2.5-0.5b
+    label: GRPO count
+    task: count
+  index:
+    path: outputs/index-qwen2.5-0.5b
+    label: GRPO index
+    task: index
+  constraint:
+    path: outputs/constraint-qwen2.5-0.5b
+    label: GRPO constraint
+    task: constraint
+  count_aromatic:
+    path: outputs/count-aromatic-ring-qwen2.5-0.5b
+    label: GRPO count/arom.ring
+    task: count_aromatic
+
+evals:
+  count_val:
+    dataset: data/count/val.jsonl
+    task: count
+  index_val:
+    dataset: data/index/val.jsonl
+    task: index
+  constraint_val:
+    dataset: data/constraint/val.jsonl
+    task: constraint
+  count_aromatic_val:
+    dataset: data/count_aromatic_ring/val.jsonl
+    task: count_aromatic
+  # Official benchmark splits (need `download_assets.sh` on a login node first;
+  # paper protocol is sampled pass@3). Uncomment to add columns:
+  # official_single_count:
+  #   dataset: ml-jku/moleculariq-v0.0
+  #   split: single_count
+  #   task: count
+  #   n: 3
+  #   temperature: 1.0
+  # official_single_index:
+  #   dataset: ml-jku/moleculariq-v0.0
+  #   split: single_index
+  #   task: index
+  #   n: 3
+  #   temperature: 1.0
+  # official_single_constraint:
+  #   dataset: ml-jku/moleculariq-v0.0
+  #   split: single_constraint_generation
+  #   task: constraint
+  #   n: 3
+  #   temperature: 1.0
+
+# Defaults applied to every eval above (per-eval keys override them).
+# Any of: split, n, temperature, top_p, limit, features, max_tokens,
+# max_model_len, gpu_mem_util, tensor_parallel, dtype, seed, dump_samples.
+eval_defaults:
+  n: 1
+  temperature: 0.0          # greedy pass@1
+  limit: null               # e.g. 500 for a quicker first pass over the matrix
+  seed: 0
