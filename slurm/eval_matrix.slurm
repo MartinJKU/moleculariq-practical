@@ -10,12 +10,14 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/%x-%j.out
 #
-# Run the whole model x dataset eval matrix on ONE GPU, sequentially, then
-# render the comparison heatmaps / bar charts / summary tables. Each cell is a
+# Run every group's model x eval cells on ONE GPU, sequentially, then render
+# each group's comparison heatmaps / bar charts / summary into its own subfolder
+# of results/matrix/plots (heldout/, official/, aromatic_ring/). Each cell is a
 # separate vLLM eval (the engine is (re)loaded per model), so budget walltime
-# for (#models x #evals) evaluations — bump --time for the official splits or
-# large --n. Cells with an existing result file are skipped, so a re-submit
-# only fills in what's new (e.g. after another training finishes).
+# accordingly — the official/ group samples pass@3 (n=3) and is ~3x slower per
+# cell than the greedy held-out group; bump --time if you enable more splits.
+# Cells with an existing result file are skipped, so a re-submit only fills in
+# what's new (e.g. after another training finishes).
 #
 # Submit FROM THE REPO ROOT:
 #     sbatch slurm/eval_matrix.slurm

@@ -5,19 +5,19 @@
 #   python scripts/compare_evals.py all  --config configs/eval_matrix.yaml
 #   # on Leonardo:  sbatch slurm/eval_matrix.slurm
 #
-# Every model below is evaluated on every eval below (the full cross product),
-# so the same run covers in-task performance ("count model on count questions
-# vs baseline") AND cross-task generalization ("count model on index
-# questions"). Results land in `results_dir` as <model>__<eval>.json; existing
-# results are skipped, so re-running after another training finishes only
-# fills in the missing cells.
+# `models` and `evals` are registries; `groups` decides what gets compared and
+# plotted TOGETHER. Each group is its own model x eval cross product (so it
+# still shows cross-task generalization inside the group, e.g. the count model
+# on index questions) and renders its own heatmaps/bars into its own subfolder
+# of `plots_dir`. Results are cached flat as results/matrix/<model>__<eval>.json
+# and shared across groups, so a re-run only fills in missing cells.
 
-metric: avg_accuracy        # headline metric for plots: avg_accuracy | pass_at_1 | pass_at_3
+metric: avg_accuracy        # default headline metric (a group may override it)
 results_dir: results/matrix
 plots_dir: results/matrix/plots
-baseline: baseline          # key in `models` used as the reference for delta plots
+baseline: baseline          # key in `models` used as the reference for deltas
 
-# `task` links models to evals: a model is "in-task" on an eval when the two
+# `task` links a model to an eval: a model is "in-task" on an eval when the two
 # tags match (those cells get outlined in the heatmaps and drive the
 # specialization-vs-generalization plot).
 models:
@@ -42,6 +42,7 @@ models:
     task: count_aromatic
 
 evals:
+  # --- held-out questions from our generated datasets (greedy pass@1) --------
   count_val:
     dataset: data/count/val.jsonl
     task: count
@@ -54,32 +55,57 @@ evals:
   count_aromatic_val:
     dataset: data/count_aromatic_ring/val.jsonl
     task: count_aromatic
-  # Official benchmark splits (need `download_assets.sh` on a login node first;
-  # paper protocol is sampled pass@3). Uncomment to add columns:
-  # official_single_count:
-  #   dataset: ml-jku/moleculariq-v0.0
-  #   split: single_count
-  #   task: count
-  #   n: 3
-  #   temperature: 1.0
-  # official_single_index:
-  #   dataset: ml-jku/moleculariq-v0.0
-  #   split: single_index
-  #   task: index
-  #   n: 3
-  #   temperature: 1.0
-  # official_single_constraint:
-  #   dataset: ml-jku/moleculariq-v0.0
-  #   split: single_constraint_generation
-  #   task: constraint
-  #   n: 3
-  #   temperature: 1.0
+  # --- official MolecularIQ v0.0 benchmark splits (paper protocol: pass@3) ----
+  # Needs the benchmark in $HF_HOME: run scripts/download_assets.sh on a login
+  # node first (compute nodes are offline).
+  official_count:
+    dataset: ml-jku/moleculariq-v0.0
+    split: single_count
+    task: count
+    n: 3
+    temperature: 1.0
+  official_index:
+    dataset: ml-jku/moleculariq-v0.0
+    split: single_index
+    task: index
+    n: 3
+    temperature: 1.0
+  official_constraint:
+    dataset: ml-jku/moleculariq-v0.0
+    split: single_constraint_generation
+    task: constraint
+    n: 3
+    temperature: 1.0
+
+# Each group -> its own comparison + its own folder under plots_dir.
+groups:
+  heldout:
+    title: held-out generated val sets (greedy pass@1)
+    subdir: heldout
+    metric: avg_accuracy
+    models: [baseline, count, index, constraint]
+    evals:  [count_val, index_val, constraint_val]
+  official:
+    title: official MolecularIQ v0.0 benchmark (sampled pass@3)
+    subdir: official
+    metric: pass_at_3
+    models: [baseline, count, index, constraint]
+    evals:  [official_count, official_index, official_constraint]
+  # Single-construct study kept separate from the overall-task comparison:
+  # does the aromatic-ring specialist beat the general count model on aromatic
+  # rings, and does it still handle general counting?
+  aromatic_ring:
+    title: single-construct study — counting aromatic rings
+    subdir: aromatic_ring
+    metric: avg_accuracy
+    models: [baseline, count, count_aromatic]
+    evals:  [count_aromatic_val, count_val]
 
 # Defaults applied to every eval above (per-eval keys override them).
 # Any of: split, n, temperature, top_p, limit, features, max_tokens,
 # max_model_len, gpu_mem_util, tensor_parallel, dtype, seed, dump_samples.
 eval_defaults:
   n: 1
-  temperature: 0.0          # greedy pass@1
+  temperature: 0.0          # greedy pass@1 (official_* evals override to n:3)
   limit: null               # e.g. 500 for a quicker first pass over the matrix
   seed: 0

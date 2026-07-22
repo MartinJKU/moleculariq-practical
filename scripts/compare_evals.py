@@ -27,6 +27,9 @@ python scripts/compare_evals.py run --config configs/eval_matrix.yaml --models c
 # Re-plot from existing results (no GPU needed, fine on a login node):
 python scripts/compare_evals.py plot --config configs/eval_matrix.yaml
 
+# Just one group (each group renders into its own plots subfolder):
+python scripts/compare_evals.py all --config configs/eval_matrix.yaml --groups heldout
+
 # On Leonardo:
 sbatch slurm/eval_matrix.slurm
 """
@@ -89,7 +92,51 @@ def load_config(path: Path) -> dict:
     cfg["results_dir"] = Path(cfg.get("results_dir", "results/matrix"))
     cfg["plots_dir"] = Path(cfg.get("plots_dir", cfg["results_dir"] / "plots"))
     cfg.setdefault("metric", "avg_accuracy")
+
+    # `groups` decide what is compared/plotted together, each into its own
+    # subfolder. With no `groups`, fall back to a single group over everything.
+    groups = cfg.get("groups") or {
+        "all": {"models": list(cfg["models"]), "evals": list(cfg["evals"])}}
+    norm = {}
+    for gkey, g in groups.items():
+        if not KEY_RE.match(gkey):
+            raise SystemExit(f"config {path}: group '{gkey}' must match {KEY_RE.pattern}")
+        g = dict(g or {})
+        g["models"] = g.get("models") or list(cfg["models"])
+        g["evals"] = g.get("evals") or list(cfg["evals"])
+        for kind, keys, registry in (("model", g["models"], cfg["models"]),
+                                     ("eval", g["evals"], cfg["evals"])):
+            unknown = [k for k in keys if k not in registry]
+            if unknown:
+                raise SystemExit(f"config {path}: group '{gkey}' references unknown "
+                                 f"{kind}(s) {unknown}; known: {sorted(registry)}")
+        g.setdefault("metric", cfg["metric"])
+        g.setdefault("title", gkey)
+        subdir = g.setdefault("subdir", gkey)
+        if not KEY_RE.match(str(subdir)):
+            raise SystemExit(f"config {path}: group '{gkey}' subdir '{subdir}' "
+                             f"must match {KEY_RE.pattern}")
+        norm[gkey] = g
+    cfg["groups"] = norm
     return cfg
+
+
+def group_cells(cfg: dict, gkeys=None, model_filter=None, eval_filter=None):
+    """Ordered, de-duplicated (model, eval) cells requested across groups."""
+    cells, seen = [], set()
+    for gkey, g in cfg["groups"].items():
+        if gkeys and gkey not in gkeys:
+            continue
+        for mkey in g["models"]:
+            if model_filter and mkey not in model_filter:
+                continue
+            for ekey in g["evals"]:
+                if eval_filter and ekey not in eval_filter:
+                    continue
+                if (mkey, ekey) not in seen:
+                    seen.add((mkey, ekey))
+                    cells.append((mkey, ekey))
+    return cells
 
 
 def result_path(cfg: dict, mkey: str, ekey: str) -> Path:
@@ -156,35 +203,40 @@ def eval_command(model_path: str, eval_cfg: dict, out: Path) -> list[str]:
 
 
 def cmd_run(cfg: dict, args) -> int:
-    models = {k: v for k, v in cfg["models"].items()
-              if not args.models or k in args.models}
-    evals = {k: v for k, v in cfg["evals"].items()
-             if not args.evals or k in args.evals}
     for name, requested, available in (("models", args.models, cfg["models"]),
-                                       ("evals", args.evals, cfg["evals"])):
+                                       ("evals", args.evals, cfg["evals"]),
+                                       ("groups", args.groups, cfg["groups"])):
         unknown = set(requested or []) - set(available)
         if unknown:
             raise SystemExit(f"unknown {name} key(s) {sorted(unknown)}; "
                              f"config has {sorted(available)}")
 
+    cells = group_cells(cfg, args.groups, args.models, args.evals)
+    resolved_cache: dict[str, str | None] = {}
+
+    def resolve(mkey):
+        if mkey not in resolved_cache:
+            resolved_cache[mkey] = resolve_model(cfg["models"][mkey]["path"])
+        return resolved_cache[mkey]
+
     todo, done, not_ready = [], [], []
-    for mkey, model in models.items():
-        resolved = resolve_model(model["path"])
-        for ekey, ecfg in evals.items():
-            out = result_path(cfg, mkey, ekey)
-            if out.exists() and not args.force:
-                done.append((mkey, ekey))
-                continue
-            if resolved is None:
-                not_ready.append((mkey, ekey, f"model {model['path']} missing"))
-                continue
-            if not dataset_ready(ecfg):
-                not_ready.append((mkey, ekey, f"dataset {ecfg['dataset']} missing"))
-                continue
-            todo.append((mkey, ekey, eval_command(resolved, ecfg, out)))
+    for mkey, ekey in cells:
+        ecfg = cfg["evals"][ekey]
+        out = result_path(cfg, mkey, ekey)
+        if out.exists() and not args.force:
+            done.append((mkey, ekey))
+            continue
+        resolved = resolve(mkey)
+        if resolved is None:
+            not_ready.append((mkey, ekey, f"model {cfg['models'][mkey]['path']} missing"))
+            continue
+        if not dataset_ready(ecfg):
+            not_ready.append((mkey, ekey, f"dataset {ecfg['dataset']} missing"))
+            continue
+        todo.append((mkey, ekey, eval_command(resolved, ecfg, out)))
 
     logger.info("matrix: %d cells | %d already done, %d to run, %d not ready",
-                len(models) * len(evals), len(done), len(todo), len(not_ready))
+                len(cells), len(done), len(todo), len(not_ready))
     for mkey, ekey, why in not_ready:
         logger.info("  not ready: %s x %s (%s)", mkey, ekey, why)
 
@@ -285,7 +337,7 @@ def draw_heatmap(ax, values, row_labels, col_labels, cmap, vmin, vmax,
     im = ax.imshow(masked, cmap=cmap, vmin=vmin, vmax=vmax, aspect="auto")
     nrows, ncols = values.shape
     # Rotate long x labels so wide columns (long eval / model names) don't collide.
-    rotate = max((len(str(c)) for c in col_labels), default=0) > 9 and ncols > 2
+    rotate = max((len(str(c)) for c in col_labels), default=0) > 9
     ax.set_xticks(range(ncols), labels=col_labels,
                   rotation=30 if rotate else 0,
                   ha="right" if rotate else "center",
@@ -332,6 +384,11 @@ def save(fig, plots_dir: Path, name: str, formats):
         logger.info("wrote %s", path)
 
 
+def titled(base: str, note: str) -> str:
+    """Prefix a figure title with the group context line, if any."""
+    return f"{note}\n{base}" if note else base
+
+
 def metric_matrix(results, cfg, model_keys, eval_keys, metric):
     import numpy as np
     m = np.full((len(model_keys), len(eval_keys)), np.nan)
@@ -349,7 +406,7 @@ def metric_matrix(results, cfg, model_keys, eval_keys, metric):
 
 
 def plot_overview_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
-                          plots_dir, formats):
+                          plots_dir, formats, note=""):
     mlabels = [cfg["models"][k]["label"] for k in model_keys]
     fig, ax = plt.subplots(
         figsize=(1.6 + 1.35 * len(eval_keys), 1.3 + 0.55 * len(model_keys)),
@@ -357,7 +414,7 @@ def plot_overview_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
     im = draw_heatmap(ax, matrix, mlabels, eval_keys, seq_cmap(), 0.0, 1.0,
                       outline=in_task_cells(cfg, model_keys, eval_keys))
     fig.colorbar(im, ax=ax, label=metric, shrink=0.85)
-    ax.set_title(f"MolecularIQ {metric}: models × eval sets", pad=12)
+    ax.set_title(titled(f"MolecularIQ {metric}: models × eval sets", note), pad=12)
     ax.set_xlabel("eval set")
     fig.text(0.01, -0.03, "outlined cell = model evaluated on its own training task",
              color=MUTED, fontsize=8)
@@ -366,7 +423,7 @@ def plot_overview_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
 
 
 def plot_delta_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
-                       plots_dir, formats):
+                       plots_dir, formats, note=""):
     import numpy as np
     bkey = cfg.get("baseline")
     if bkey not in model_keys:
@@ -386,7 +443,8 @@ def plot_delta_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
     im = draw_heatmap(ax, delta, mlabels, eval_keys, div_cmap(), -lim, lim,
                       fmt="{:+.2f}", outline=in_task_cells(cfg, others, eval_keys))
     fig.colorbar(im, ax=ax, label=f"Δ {metric} vs baseline", shrink=0.85)
-    ax.set_title(f"Improvement over {cfg['models'][bkey]['label']}", pad=12)
+    ax.set_title(titled(f"Improvement over {cfg['models'][bkey]['label']}", note),
+                 pad=12)
     ax.set_xlabel("eval set")
     fig.text(0.01, -0.03, "outlined cell = model evaluated on its own training task",
              color=MUTED, fontsize=8)
@@ -402,7 +460,7 @@ def model_color(cfg, mkey: str) -> str:
 
 
 def plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
-                      plots_dir, formats):
+                      plots_dir, formats, note=""):
     import numpy as np
     fig, ax = plt.subplots(
         figsize=(2.0 + 1.9 * len(eval_keys), 4.2), constrained_layout=True)
@@ -426,7 +484,7 @@ def plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
     ax.grid(axis="y", zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="x", length=0)
-    ax.set_title(f"MolecularIQ {metric} by eval set", pad=12)
+    ax.set_title(titled(f"MolecularIQ {metric} by eval set", note), pad=12)
     ax.legend(frameon=False, ncols=min(3, nm), loc="upper left",
               bbox_to_anchor=(0, 1.0), fontsize=9)
     save(fig, plots_dir, f"bars_{metric}", formats)
@@ -434,7 +492,7 @@ def plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
 
 
 def plot_specialization(plt, cfg, matrix, model_keys, eval_keys, metric,
-                        plots_dir, formats):
+                        plots_dir, formats, note=""):
     """Per trained model: Δ vs baseline on its own task vs on the other tasks."""
     import numpy as np
     bkey = cfg.get("baseline")
@@ -479,7 +537,8 @@ def plot_specialization(plt, cfg, matrix, model_keys, eval_keys, metric,
     ax.grid(axis="y", zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
     ax.tick_params(axis="x", length=0)
-    ax.set_title("Specialization vs generalization (gain over baseline)", pad=12)
+    ax.set_title(titled("Specialization vs generalization (gain over baseline)",
+                        note), pad=12)
     ax.legend(frameon=False, fontsize=9)
     save(fig, plots_dir, "specialization_vs_generalization", formats)
     plt.close(fig)
@@ -490,7 +549,8 @@ def ordered_bins(found: set[str]) -> list[str]:
     return [b for b in known if b in found] + sorted(found - set(known))
 
 
-def plot_complexity(plt, cfg, results, model_keys, eval_keys, plots_dir, formats):
+def plot_complexity(plt, cfg, results, model_keys, eval_keys, plots_dir, formats,
+                    note=""):
     """Small multiples: per eval set, models x complexity bins (avg accuracy)."""
     import numpy as np
     panels = []
@@ -529,13 +589,14 @@ def plot_complexity(plt, cfg, results, model_keys, eval_keys, plots_dir, formats
     for ax in axes.flat[len(panels):]:
         ax.set_visible(False)
     fig.colorbar(im, ax=axes, label="avg_accuracy", shrink=0.8)
-    fig.suptitle("Accuracy by molecule complexity bin (heavy-atom count)",
-                 color=INK)
+    fig.suptitle(titled("Accuracy by molecule complexity bin (heavy-atom count)",
+                        note).replace("\n", " — "), color=INK)
     save(fig, plots_dir, "heatmap_complexity", formats)
     plt.close(fig)
 
 
-def plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats):
+def plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats,
+                  note=""):
     """Per eval set: construct-level (features) accuracy, features x models."""
     import numpy as np
     feats = set()
@@ -565,13 +626,15 @@ def plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats):
     im = draw_heatmap(ax, mat, feats, mlabels, seq_cmap(), 0.0, 1.0,
                       cell_fontsize=8)
     fig.colorbar(im, ax=ax, label="avg_accuracy", shrink=0.7)
-    ax.set_title(f"Per-construct accuracy on {ekey}\n"
-                 "(rows sorted by baseline accuracy)", fontsize=11, pad=12)
+    ax.set_title(titled(f"Per-construct accuracy on {ekey} "
+                        "(rows sorted by baseline accuracy)", note),
+                 fontsize=11, pad=12)
     save(fig, plots_dir, f"heatmap_features__{ekey}", formats)
     plt.close(fig)
 
 
-def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir):
+def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir,
+                  note=""):
     import numpy as np
     bkey = cfg.get("baseline")
     brow = matrix[model_keys.index(bkey)] if bkey in model_keys else None
@@ -602,6 +665,8 @@ def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir
     md_path = plots_dir / "summary.md"
     with open(md_path, "w") as f:
         f.write(f"# Eval matrix — {metric}\n\n")
+        if note:
+            f.write(f"_{note}_\n\n")
         f.write("Cell format: `metric (Δ vs baseline)`; `–` = not evaluated yet.\n\n")
         f.write("| model | " + " | ".join(eval_keys) + " |\n")
         f.write("|---" * (len(eval_keys) + 1) + "|\n")
@@ -619,38 +684,65 @@ def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir
     logger.info("wrote %s", md_path)
 
 
+def plot_group(plt, cfg, results, gkey, args):
+    """Render one group's figures + summary into plots_dir/<subdir>/."""
+    g = cfg["groups"][gkey]
+    metric = args.metric or g["metric"]
+    note = g["title"]
+    formats = args.formats
+    model_keys = [m for m in g["models"]
+                  if (not args.models or m in args.models)
+                  and any((m, e) in results for e in g["evals"])]
+    eval_keys = [e for e in g["evals"]
+                 if (not args.evals or e in args.evals)
+                 and any((m, e) in results for m in g["models"])]
+    if not model_keys or not eval_keys:
+        logger.warning("group '%s': no results yet — skipping", gkey)
+        return False
+
+    plots_dir = cfg["plots_dir"] / g["subdir"]
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("group '%s': %d models x %d evals (metric=%s) -> %s",
+                gkey, len(model_keys), len(eval_keys), metric, plots_dir)
+
+    matrix = metric_matrix(results, cfg, model_keys, eval_keys, metric)
+    plot_overview_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
+                          plots_dir, formats, note)
+    plot_delta_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
+                       plots_dir, formats, note)
+    plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
+                      plots_dir, formats, note)
+    plot_specialization(plt, cfg, matrix, model_keys, eval_keys, metric,
+                        plots_dir, formats, note)
+    plot_complexity(plt, cfg, results, model_keys, eval_keys, plots_dir, formats,
+                    note)
+    for ekey in eval_keys:
+        plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats, note)
+    write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir,
+                  note)
+    return True
+
+
 def cmd_plot(cfg: dict, args) -> int:
+    if args.groups:
+        unknown = set(args.groups) - set(cfg["groups"])
+        if unknown:
+            raise SystemExit(f"unknown group(s) {sorted(unknown)}; "
+                             f"config has {sorted(cfg['groups'])}")
     results = load_results(cfg)
     if not results:
         logger.error("no result files in %s — run the 'run' step first", cfg["results_dir"])
         return 1
-    metric = args.metric or cfg["metric"]
-    model_keys = [k for k in cfg["models"]
-                  if any((k, e) in results for e in cfg["evals"])]
-    eval_keys = [e for e in cfg["evals"]
-                 if any((m, e) in results for m in cfg["models"])]
-    logger.info("plotting %d results (%d models x %d evals, metric=%s)",
-                len(results), len(model_keys), len(eval_keys), metric)
 
     plt = setup_matplotlib()
-    plots_dir = cfg["plots_dir"]
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    formats = args.formats
-
-    matrix = metric_matrix(results, cfg, model_keys, eval_keys, metric)
-    plot_overview_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
-                          plots_dir, formats)
-    plot_delta_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
-                       plots_dir, formats)
-    plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
-                      plots_dir, formats)
-    plot_specialization(plt, cfg, matrix, model_keys, eval_keys, metric,
-                        plots_dir, formats)
-    plot_complexity(plt, cfg, results, model_keys, eval_keys, plots_dir, formats)
-    for ekey in eval_keys:
-        plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats)
-    write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir)
-    logger.info("all plots in %s", plots_dir)
+    cfg["plots_dir"].mkdir(parents=True, exist_ok=True)
+    gkeys = args.groups or list(cfg["groups"])
+    plotted = [gkey for gkey in gkeys if plot_group(plt, cfg, results, gkey, args)]
+    if not plotted:
+        logger.error("nothing plotted — no group has results yet")
+        return 1
+    logger.info("plotted %d group(s) under %s: %s",
+                len(plotted), cfg["plots_dir"], ", ".join(plotted))
     return 0
 
 
@@ -661,6 +753,9 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("command", choices=["run", "plot", "all"])
     p.add_argument("--config", type=Path, default=REPO_ROOT / "configs/eval_matrix.yaml")
+    p.add_argument("--groups", nargs="+", default=None,
+                   help="Restrict to these group keys from the config "
+                        "(e.g. heldout official aromatic_ring)")
     p.add_argument("--models", nargs="+", default=None,
                    help="Restrict to these model keys from the config")
     p.add_argument("--evals", nargs="+", default=None,

@@ -157,20 +157,29 @@ harness against the trained checkpoint; prompts/extraction here match it.
 ## Comparing baseline vs single-task models (`compare_evals.py`)
 
 `scripts/compare_evals.py` automates the whole single-task comparison: it
-evaluates **every model on every eval dataset** (the full cross product, one
-`evaluate.py` call per cell) and renders the figures and tables you need for
-the practical. One config, `configs/eval_matrix.yaml`, lists the models
-(baseline + each single-task checkpoint) and the eval sets; edit it to add or
-drop rows. Because a model is scored on *all* eval sets, one run answers both
-questions at once:
+evaluates the models against the eval datasets (one `evaluate.py` call per
+cell) and renders the figures and tables you need for the practical. One
+config, `configs/eval_matrix.yaml`, lists the `models` (baseline + each
+single-task checkpoint) and the `evals`, and then `groups` decide what is
+compared and plotted **together**. Each group is its own model × eval grid, so
+one run answers both questions at once:
 
 - **Specialization** — each task-trained model vs the baseline on its own task
   (the heatmap diagonal / the "own task" bars).
 - **Generalization** — each task-trained model on the *other* tasks, e.g. the
   count model on index questions (the off-diagonal cells).
 
+The shipped config defines three groups, each rendered into **its own subfolder**
+of `results/matrix/plots/`:
+
+| Group → folder | What it compares |
+|---|---|
+| `heldout/` | baseline + count/index/constraint models on our generated held-out val sets (greedy pass@1) |
+| `official/` | the same models on the official `ml-jku/moleculariq-v0.0` splits (sampled pass@3) |
+| `aromatic_ring/` | single-construct study: baseline vs the general count model vs the aromatic-ring specialist — kept out of the overall-task grid |
+
 ```bash
-# On Leonardo (evaluate the matrix on 1 GPU, then plot):
+# On Leonardo (evaluate every group's cells on 1 GPU, then plot):
 sbatch slurm/eval_matrix.slurm
 
 # Or drive it directly:
@@ -180,17 +189,19 @@ python scripts/compare_evals.py plot --config configs/eval_matrix.yaml   # figur
 
 # Preview what would run without launching vLLM:
 python scripts/compare_evals.py run --config configs/eval_matrix.yaml --dry-run
-# Only some models/evals:
+# Only one group / some models:
+python scripts/compare_evals.py all --config configs/eval_matrix.yaml --groups heldout
 python scripts/compare_evals.py run --config configs/eval_matrix.yaml --models count index
 ```
 
-Cells are cached as `results/matrix/<model>__<eval>.json`; **existing results
-are skipped**, so you can run the matrix now with whatever models have finished
-and re-submit later to fill in the rest (missing cells show as `–` in the
-plots). Models/datasets that don't exist yet are reported as "not ready" and
-skipped, not errored, so a partially-trained sweep still produces output.
+Cells are cached flat as `results/matrix/<model>__<eval>.json` and shared
+across groups; **existing results are skipped**, so you can run the matrix now
+with whatever models have finished and re-submit later to fill in the rest
+(missing cells show as `–` in the plots). Models/datasets that don't exist yet
+are reported as "not ready" and skipped, not errored, so a partially-trained
+sweep still produces output.
 
-Figures land in `results/matrix/plots/` (`--formats png pdf`):
+Each group folder gets the full figure set (`--formats png pdf`):
 
 | File | What it shows |
 |---|---|
@@ -202,10 +213,11 @@ Figures land in `results/matrix/plots/` (`--formats png pdf`):
 | `heatmap_features__<eval>.png` | per-construct (`features`) accuracy, models side by side |
 | `summary.csv` / `summary.md` | every cell + Δ vs baseline as a table |
 
-The headline `metric` (default `avg_accuracy`; also `pass_at_1`, or `pass_at_3`
-when evals set `n: 3`) is set in the config or with `--metric`. The commented
-`official_*` blocks in the config add `ml-jku/moleculariq-v0.0` splits as extra
-columns (run `download_assets.sh` on a login node first).
+Each group sets its own headline `metric` (`avg_accuracy`, `pass_at_1`, or
+`pass_at_3` when its evals use `n: 3`); `--metric` overrides it. The `official`
+group needs the benchmark cached in `$HF_HOME` — run `download_assets.sh` on a
+login node first (compute nodes are offline). Add a group, or move an eval
+between groups, by editing the `groups:` block in the config.
 
 ## Environment / pinned versions
 
