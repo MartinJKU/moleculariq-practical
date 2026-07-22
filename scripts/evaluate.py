@@ -154,9 +154,12 @@ def main():
         ]
         q_avg = sum(rewards) / len(rewards)
         metrics_acc.append(q_avg)
-        by_features[row.get("features", "unknown")].append(q_avg)
-        by_bin[row.get("complexity_bin", "unknown")].append(q_avg)
-        by_task[row.get("task_type", "unknown")].append(q_avg)
+        # `or "unknown"`, not .get(key, "unknown"): official benchmark rows carry
+        # explicit None values, which .get's default does not cover (and None
+        # keys break the sorted() aggregation below).
+        by_features[row.get("features") or "unknown"].append(q_avg)
+        by_bin[row.get("complexity_bin") or "unknown"].append(q_avg)
+        by_task[row.get("task_type") or "unknown"].append(q_avg)
         per_question.append({
             "uid": row.get("uid"),
             "features": row.get("features"),
@@ -166,6 +169,16 @@ def main():
         })
 
     n_q = len(rows)
+
+    # Write per-sample results before computing aggregates: generation is the
+    # expensive part, and the raw rewards are enough to recompute any aggregate
+    # offline if the summary code fails.
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    samples_path = args.out.with_suffix(".samples.jsonl")
+    with open(samples_path, "w") as f:
+        for p in per_question:
+            f.write(json.dumps(p) + "\n")
+
     results = {
         "model": args.model,
         "dataset": args.dataset,
@@ -187,14 +200,8 @@ def main():
     if args.n >= 5:
         results["pass_at_5"] = sum(pass_at_k(p["rewards"], 5) for p in per_question) / n_q
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)
-
-    samples_path = args.out.with_suffix(".samples.jsonl")
-    with open(samples_path, "w") as f:
-        for p in per_question:
-            f.write(json.dumps(p) + "\n")
 
     logger.info("Results: avg_accuracy=%.4f pass@1=%.4f%s",
                 results["avg_accuracy"], results["pass_at_1"],
