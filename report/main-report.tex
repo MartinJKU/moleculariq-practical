@@ -84,11 +84,16 @@
     counting, indexing and constraint generation -- and evaluate every
     resulting model on every task to separate specialization from transfer.
     Single-task training reliably improves the task it was trained on, but the
-    gains do not transfer: cross-task cells are at or below the untrained
-    baseline. Comparing our generated held-out sets against the official
-    benchmark also exposes a flaw in our own constraint data, which a
-    constant-answer control confirms. We report all results with confidence
-    intervals and paired significance tests.
+    gains barely transfer: cross-task effects are an order of magnitude smaller
+    than the diagonal and vanish on the official benchmark. Comparing our
+    generated held-out sets against the official benchmark also exposed a flaw
+    in our own constraint questions: a constant-answer control that reads no
+    question at all scores $0.530$ there, indistinguishable from every trained
+    model, and the constraint-trained model concentrates $91\%$ of its answers
+    on a single molecule. GRPO found and amplified that degenerate solution
+    rather than failing on it -- a reward-hacking result invisible to accuracy
+    alone. We report all results with confidence intervals, paired significance
+    tests and answer-diversity statistics.
 }
 
 \keywords{reinforcement learning, GRPO, molecular reasoning, LLM evaluation}
@@ -293,11 +298,12 @@ evaluation.
 \end{figure}
 
 On its own task, single-task GRPO works. On the held-out sets
-(Figure~\ref{fig:heldout}), counting rises from $0.12$ at baseline to $0.25$,
-and indexing from $0.00$ to $0.25$. The indexing result is the cleanest in the
-study: the untrained model solves essentially none of these questions, so the
-entire post-training score is attributable to the intervention. Both diagonal
-gains are significant under the paired bootstrap ($p<0.05$).
+(Figure~\ref{fig:heldout}), counting rises from $0.120$ at baseline to $0.250$
+($+0.130$) and indexing from $0.000$ to $0.250$. The indexing result is the
+cleanest in the study: the untrained model solves \emph{none} of these
+questions, so the entire post-training score is attributable to the
+intervention. Both diagonal gains are significant under the paired bootstrap
+($p<0.05$).
 
 The official splits (Figure~\ref{fig:official}) confirm the direction for two
 of the three families. Constraint generation improves from $0.06$ to $0.14$ and
@@ -316,13 +322,26 @@ in its column. Counting is the exception and is discussed below.
 }\label{fig:transfer}
 \end{figure}
 
-Transfer is the negative result of this study, and it is consistent. In
-Table~\ref{tab:matrix}, the off-diagonal cells cluster at or below the
-untrained baseline: the count-trained model scores $0.04$ on official indexing
-(baseline $0.04$) and $0.12$ on official constraint generation, and the
-constraint-trained model drops to $0.00$ on official indexing. Nothing in the
-off-diagonal reaches significance as an improvement, and several cells are
-significant degradations.
+Transfer is the negative result of this study. Between the two analytic tasks it
+is weakly positive: the count-trained model gains $+0.082$ on held-out indexing
+and the index-trained model $+0.042$ on held-out counting, both significant at
+$p<0.05$ but an order of magnitude smaller than the corresponding diagonal
+gains. We attribute this to shared surface competence rather than shared
+procedure -- both tasks require emitting a well-formed JSON answer block over a
+parsed molecule, and GRPO on either sharpens that habit. It does not survive to
+the official splits (Table~\ref{tab:matrix}), where the off-diagonal cells sit
+at or below the untrained baseline.
+
+The constraint column of the held-out block must be excluded from this analysis
+rather than read as transfer, and the control row is what makes that visible.
+Because a single fixed molecule scores $0.530$ there, differences between models
+in that column are not measuring constraint satisfaction at all: they are
+measuring how closely each policy resembles a degenerate small-molecule
+generator. The count-trained model's apparently significant $-0.112$ is, on this
+reading, the model becoming \emph{less} degenerate and therefore losing a lottery
+the metric rewards -- not evidence that counting training harmed constraint
+ability. Section~\ref{sec:constraint-flaw} develops this, and we draw all
+constraint-generation conclusions from the official split instead.
 
 The interpretation we favour is that the three families share surface form --
 the same prompt template, the same answer block -- but not procedure. Counting
@@ -349,8 +368,10 @@ a diagnostic rather than as a result.
     Full evaluation matrix. Rows are models, columns are evaluation sets.
     Held-out columns are greedy pass@1 (\texttt{avg\_accuracy}); official
     columns are sampled pass@3. Bold marks the task-matched (diagonal) cell of
-    each column. Exact values with confidence intervals and $p$-values are in
-    \texttt{results/matrix/plots/*/summary.csv}.
+    each column. The italicised control cell is the score a single fixed
+    molecule achieves with no model at all -- note that it is within noise of
+    every entry in its column. Confidence intervals and $p$-values for all
+    cells are in \texttt{results/matrix/plots/*/summary.csv}.
 }\label{tab:matrix}
 \small
 \begin{tabularx}{\linewidth}{l>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X>{\centering\arraybackslash}X}
@@ -359,11 +380,11 @@ a diagnostic rather than as a result.
 \cmidrule(lr){2-4}\cmidrule(lr){5-7}
 \textbf{Model} & count & index & constr. & count & index & constr. \\
 \midrule
-Constant control    & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} & \tbd{} \\
-Qwen 0.5B untrained & 0.12 & 0.00 & 0.54 & 0.13 & 0.04 & 0.06 \\
-GRPO count          & \textbf{0.25} & 0.08 & 0.42 & \textbf{0.07} & 0.04 & 0.12 \\
-GRPO index          & 0.17 & \textbf{0.25} & 0.48 & 0.14 & \textbf{0.08} & 0.10 \\
-GRPO constraint     & 0.15 & 0.00 & \textbf{0.55} & 0.07 & 0.00 & \textbf{0.14} \\
+Constant control    & 0.000 & 0.000 & \textit{0.530} & \tbd{} & \tbd{} & \tbd{} \\
+Qwen 0.5B untrained & 0.120 & 0.000 & 0.540 & 0.13 & 0.04 & 0.06 \\
+GRPO count          & \textbf{0.250} & 0.082 & 0.428 & \textbf{0.07} & 0.04 & 0.12 \\
+GRPO index          & 0.162 & \textbf{0.250} & 0.486 & 0.14 & \textbf{0.08} & 0.10 \\
+GRPO constraint     & 0.148 & 0.000 & \textbf{0.552} & 0.07 & 0.00 & \textbf{0.14} \\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -373,26 +394,51 @@ GRPO constraint     & 0.15 & 0.00 & \textbf{0.55} & 0.07 & 0.00 & \textbf{0.14} 
 
 Table~\ref{tab:matrix} contains one column that does not behave like the
 others. On our held-out constraint set the \emph{untrained} baseline scores
-$0.542$ ($95\%$ CI $[0.498, 0.586]$, $n=500$), and no trained model separates
-from it meaningfully -- the constraint-trained model reaches $0.55$, a
-difference of $+0.01$ that is not significant. On the official constraint split
+$0.540$ ($95\%$ CI $[0.496, 0.584]$, $n=500$), and no trained model separates
+from it meaningfully -- the constraint-trained model reaches $0.552$, a
+difference of $+0.012$ that is not significant. On the official constraint split
 the same baseline scores $0.06$. Counting and indexing agree closely across the
 two sources; constraint generation disagrees by roughly $9\times$. That pattern
 points at the data, not the models.
 
-Inspecting the baseline's own answers confirms it. Across $500$ questions the
-model produced only $59$ distinct SMILES, and three molecules account for
-$81.4\%$ of all answers (Table~\ref{tab:degenerate}). The single most common
-answer, \texttt{C(=O)C}, was emitted for $45.8\%$ of questions and scored
-$0.786$ on them. The model is not solving the task; it is emitting a small
-molecule that happens to satisfy most constraints.
+The constant-answer control settles it. Answering every question with the fixed
+string \texttt{\{"smiles": "CC=O"\}} -- no model, no GPU, no reading of the
+question -- scores $0.530$ ($95\%$ CI $[0.486, 0.574]$), which is statistically
+indistinguishable from the untrained baseline's $0.540$ and from the
+constraint-trained model's $0.552$. The same control scores exactly $0.000$ on
+both counting and indexing, so it is not a generic artefact of the scoring
+pipeline: it isolates constraint generation specifically. Put plainly, the entire
+held-out constraint column is reachable without a model.
+
+Inspecting the baseline's own answers agrees. Across $500$ questions it produced
+only $62$ distinct answer strings; normalising to the SMILES field, three
+molecules account for $81.4\%$ of all answers (Table~\ref{tab:degenerate}). The
+single most common answer, \texttt{C(=O)C}, was emitted for $45.8\%$ of questions
+and scored $0.786$ on them. The model is not solving the task; it is emitting a
+small molecule that happens to satisfy most constraints.
+
+\subsubsection*{GRPO exploits the flaw rather than failing on it}
+
+The most consequential observation is what training did to this behaviour. Answer
+diversity on the held-out constraint set moves in the wrong direction: the
+untrained baseline concentrates $43\%$ of its answers on one molecule, whereas
+the \emph{constraint-trained} model concentrates $91\%$ of its answers on a
+single string, \texttt{\{"smiles": "CC(O)C"\}}. GRPO did not merely fail to learn
+constraint satisfaction -- it searched the space, found the degenerate
+constant-output solution, and reinforced it, because that is what the reward
+actually paid for. This is textbook reward hacking, and it is invisible to
+accuracy alone: on the held-out metric the collapsed policy is the
+\emph{best-scoring} model in its column. Only the diversity statistic and the
+control expose it.
 
 \begin{table}[!b]
 \centering
 \caption{%
     Degenerate answers from the untrained baseline on the held-out constraint
-    set ($n=500$, $59$ distinct answers in total). Three molecules cover
-    $81.4\%$ of all responses.
+    set ($n=500$). Three molecules cover $81.4\%$ of all responses. Shares are
+    computed after normalising to the SMILES field; the pipeline's own diversity
+    statistic counts raw answer strings and therefore reports a slightly more
+    conservative $62$ distinct answers at a $43\%$ top share.
 }\label{tab:degenerate}
 \small
 \begin{tabularx}{\linewidth}{lXrr}
@@ -430,18 +476,13 @@ $0.00$ is molecular formula, the only one requiring an exact string match,
 where a lucky guess is impossible.
 
 Critically, the zero-answer cap that prevents this failure mode for counting
-and indexing is not applied to constraint tasks (\texttt{data.py:405}). The
-same flaw is therefore present in the constraint \emph{training} data, which
-explains why GRPO on constraint generation gained so little on this set: a
-large share of its reward was obtainable by a constant, so there was little
-gradient pressure toward genuine constraint satisfaction.
-
-The constant-answer control (Section~\ref{sec:control}) closes the argument by
-measuring the trivial floor directly rather than inferring it.
-\tbd{run \texttt{./scripts/reproduce.sh eval} and report the control row from
-Table~\ref{tab:matrix}; the expectation from the analysis above is a
-constraint-column score close to the untrained baseline's $0.54$ and near zero
-elsewhere.}
+and indexing is not applied to constraint tasks (\texttt{data.py:405}). The same
+flaw is therefore present in the constraint \emph{training} data, and that is the
+mechanism behind the collapse documented above: a large share of the achievable
+reward required no constraint reasoning, so the group-relative advantage
+systematically favoured whichever completion was shortest and most generically
+valid. The reward hacking was not a training accident -- it was the optimum of
+the objective we actually specified.
 
 \subsection{Single-construct specialization}
 
@@ -473,10 +514,14 @@ Several constraints on these conclusions should be stated plainly.
 
 \emph{The constraint results are compromised on one of two sources.} As
 Section~\ref{sec:constraint-flaw} documents, our generated constraint questions
-are largely satisfiable by a trivial molecule, so the held-out constraint column
-measures answer size more than constraint satisfaction. We report it for
-transparency but draw conclusions about constraint generation only from the
-official split. Repairing this requires extending the zero-answer cap to
+are largely satisfiable by a trivial molecule -- the constant-answer control
+scores $0.530$ against a best trained model of $0.552$ -- so the held-out
+constraint column measures proximity to a degenerate generator rather than
+constraint satisfaction. We report it for transparency but draw conclusions about
+constraint generation only from the official split. The constraint-trained model
+itself should be regarded as a reward-hacked artefact rather than a constraint
+solver, and its official-split score, while an improvement over baseline, is not
+evidence against that. Repairing this requires extending the zero-answer cap to
 constraint tasks and rejecting vacuous constraints, then regenerating the data
 and retraining -- work we did not have the compute budget to redo here.
 
@@ -522,13 +567,18 @@ reward scale cannot dominate the group advantage, and evaluation on the full
 matrix at every checkpoint so interference is visible while it happens rather
 than at the end.
 
-The methodological lesson is at least as valuable. A benchmark number is only
-as trustworthy as the control it is measured against. Here, a baseline scoring
-$0.54$ looked like a competent model until a second data source disagreed, an
-answer-diversity check showed three molecules covering $81\%$ of responses, and
-a constant-answer control reproduced most of the score without a model at all.
+The methodological lesson is at least as valuable. A benchmark number is only as
+trustworthy as the control it is measured against. Here, a baseline scoring
+$0.540$ looked like a competent model until a second data source disagreed by
+$9\times$, an answer-diversity check showed three molecules covering $81\%$ of
+responses, and a constant-answer control scored $0.530$ with no model at all.
+Worse, the model that looked \emph{best} in that column was the one that had
+collapsed hardest, concentrating $91\%$ of its answers on a single molecule --
+so ranking by accuracy would have actively selected the most degenerate policy.
 None of those three checks is expensive, and the evaluation harness in this
-repository now performs all of them by default.
+repository now performs all of them by default. Any reward defined by a verifier
+should be paired with a control that measures what the verifier accepts for
+free.
 
 \printbibliography
 
