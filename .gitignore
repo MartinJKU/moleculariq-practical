@@ -16,3 +16,20 @@ hf_cache/
 # SLURM logs, but keep the dir so #SBATCH --output=logs/... works at submit time
 logs/*
 !logs/.gitkeep
+
+# LaTeX build artefacts (report/)
+report/*.aux
+report/*.bbl
+report/*.bcf
+report/*.blg
+report/*.fdb_latexmk
+report/*.fls
+report/*.lof
+report/*.log
+report/*.lot
+report/*.out
+report/*.run.xml
+report/*.toc
+report/*.xdv
+report/*.synctex.gz
+report/figures/*.pdf
