@@ -46,6 +46,9 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from moleculariq_grpo.stats import paired_bootstrap_diff  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("compare_evals")
@@ -86,6 +89,9 @@ def load_config(path: Path) -> dict:
     cfg["evals"] = {k: {**defaults, **(v or {})} for k, v in cfg["evals"].items()}
     for key, m in cfg["models"].items():
         m.setdefault("label", key)
+        if not m.get("path") and m.get("constant_answer") is None:
+            raise SystemExit(f"config {path}: model '{key}' needs either a "
+                             "'path' or a 'constant_answer'")
     baseline = cfg.get("baseline")
     if baseline is not None and baseline not in cfg["models"]:
         raise SystemExit(f"config {path}: baseline '{baseline}' is not a key of 'models'")
@@ -186,11 +192,16 @@ def dataset_ready(eval_cfg: dict) -> bool:
 # run: execute the matrix via scripts/evaluate.py
 # ---------------------------------------------------------------------------
 
-def eval_command(model_path: str, eval_cfg: dict, out: Path) -> list[str]:
+def eval_command(model_cfg: dict, resolved: str | None, eval_cfg: dict,
+                 out: Path) -> list[str]:
     cmd = [sys.executable, str(REPO_ROOT / "scripts" / "evaluate.py"),
-           "--model", model_path,
            "--dataset", eval_cfg["dataset"],
            "--out", str(out)]
+    if model_cfg.get("constant_answer") is not None:
+        # Control "model": no checkpoint, no GPU -- see evaluate.py.
+        cmd += ["--constant-answer", model_cfg["constant_answer"]]
+    else:
+        cmd += ["--model", resolved]
     for key, flag in EVAL_FLAGS:
         val = eval_cfg.get(key)
         if val is not None:
@@ -216,11 +227,15 @@ def cmd_run(cfg: dict, args) -> int:
 
     def resolve(mkey):
         if mkey not in resolved_cache:
-            resolved_cache[mkey] = resolve_model(cfg["models"][mkey]["path"])
+            m = cfg["models"][mkey]
+            # A control model has no checkpoint to resolve.
+            resolved_cache[mkey] = ("constant" if m.get("constant_answer") is not None
+                                    else resolve_model(m["path"]))
         return resolved_cache[mkey]
 
     todo, done, not_ready = [], [], []
     for mkey, ekey in cells:
+        mcfg = cfg["models"][mkey]
         ecfg = cfg["evals"][ekey]
         out = result_path(cfg, mkey, ekey)
         if out.exists() and not args.force:
@@ -228,12 +243,12 @@ def cmd_run(cfg: dict, args) -> int:
             continue
         resolved = resolve(mkey)
         if resolved is None:
-            not_ready.append((mkey, ekey, f"model {cfg['models'][mkey]['path']} missing"))
+            not_ready.append((mkey, ekey, f"model {mcfg['path']} missing"))
             continue
         if not dataset_ready(ecfg):
             not_ready.append((mkey, ekey, f"dataset {ecfg['dataset']} missing"))
             continue
-        todo.append((mkey, ekey, eval_command(resolved, ecfg, out)))
+        todo.append((mkey, ekey, eval_command(mcfg, resolved, ecfg, out)))
 
     logger.info("matrix: %d cells | %d already done, %d to run, %d not ready",
                 len(cells), len(done), len(todo), len(not_ready))
@@ -276,7 +291,8 @@ INK_2 = "#52514e"
 MUTED = "#898781"
 GRIDLINE = "#e1e0d9"
 AXIS = "#c3c2b7"
-BASELINE_GRAY = "#898781"                                  # reference series
+BASELINE_GRAY = "#898781"                                  # untrained reference
+CONTROL_GRAY = "#c3c2b7"                                   # constant-answer floor
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",      # categorical slots,
           "#e87ba4", "#008300", "#4a3aa7", "#e34948"]      # fixed order
 SEQ = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5",         # sequential blue,
@@ -405,6 +421,29 @@ def metric_matrix(results, cfg, model_keys, eval_keys, metric):
     return m
 
 
+def ci_errors(results, model_keys, eval_keys, metric, matrix):
+    """Asymmetric [lower, upper] error-bar offsets from the stored CIs.
+
+    Returns None when no result carries an interval (results produced before
+    CIs were recorded), so the caller can fall back to plain bars rather than
+    inventing uncertainty it does not have.
+    """
+    import numpy as np
+    err = np.zeros((2, len(model_keys), len(eval_keys)))
+    found = False
+    for i, mkey in enumerate(model_keys):
+        for j, ekey in enumerate(eval_keys):
+            res = results.get((mkey, ekey)) or {}
+            ci = res.get(f"{metric}_ci")
+            point = matrix[i, j]
+            if not ci or np.isnan(point):
+                continue
+            found = True
+            err[0, i, j] = max(0.0, point - ci[0])
+            err[1, i, j] = max(0.0, ci[1] - point)
+    return err if found else None
+
+
 def plot_overview_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
                           plots_dir, formats, note=""):
     mlabels = [cfg["models"][k]["label"] for k in model_keys]
@@ -452,34 +491,61 @@ def plot_delta_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
     plt.close(fig)
 
 
-def model_color(cfg, mkey: str) -> str:
-    keys = [k for k in cfg["models"] if k != cfg.get("baseline")]
+def is_control(cfg, mkey: str) -> bool:
+    return cfg["models"][mkey].get("constant_answer") is not None
+
+
+def model_style(cfg, mkey: str) -> tuple[str, str | None]:
+    """(fill colour, hatch) for a model.
+
+    Reference series are deliberately recessive so the eye goes to the trained
+    models: the constant-answer control is hatched light gray (it is a floor,
+    not a competitor), the untrained baseline is solid gray, and only actually
+    trained models consume categorical hues — assigned in fixed order so a
+    model keeps its colour when other models are absent from a group.
+    """
+    if is_control(cfg, mkey):
+        return CONTROL_GRAY, "///"
     if mkey == cfg.get("baseline"):
-        return BASELINE_GRAY
-    return SERIES[keys.index(mkey) % len(SERIES)]
+        return BASELINE_GRAY, None
+    trained = [k for k in cfg["models"]
+               if k != cfg.get("baseline") and not is_control(cfg, k)]
+    return SERIES[trained.index(mkey) % len(SERIES)], None
 
 
-def plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
+def model_color(cfg, mkey: str) -> str:
+    return model_style(cfg, mkey)[0]
+
+
+def plot_grouped_bars(plt, cfg, results, matrix, model_keys, eval_keys, metric,
                       plots_dir, formats, note=""):
     import numpy as np
     fig, ax = plt.subplots(
-        figsize=(2.0 + 1.9 * len(eval_keys), 4.2), constrained_layout=True)
+        figsize=(2.0 + 1.9 * len(eval_keys), 4.4), constrained_layout=True)
     nm = len(model_keys)
     width = 0.8 / nm
     x = np.arange(len(eval_keys))
+    err = ci_errors(results, model_keys, eval_keys, metric, matrix)
     for i, mkey in enumerate(model_keys):
         vals = matrix[i]
         pos = x - 0.4 + width * (i + 0.5)
+        color, hatch = model_style(cfg, mkey)
         ax.bar(pos, np.nan_to_num(vals), width=width * 0.82,
-               color=model_color(cfg, mkey), label=cfg["models"][mkey]["label"],
-               zorder=3)
-        for p, v in zip(pos, vals):
+               color=color, hatch=hatch, edgecolor=INK_2 if hatch else "none",
+               linewidth=0.6 if hatch else 0,
+               label=cfg["models"][mkey]["label"], zorder=3,
+               yerr=err[:, i, :] if err is not None else None,
+               error_kw={"ecolor": INK_2, "elinewidth": 1.1, "capsize": 2.5,
+                         "capthick": 1.1, "zorder": 4} if err is not None else None)
+        for p, v, j in zip(pos, vals, range(len(eval_keys))):
             if not np.isnan(v):
-                ax.text(p, v + 0.015, f"{v:.2f}", ha="center", va="bottom",
+                top = v + (err[1, i, j] if err is not None else 0.0)
+                ax.text(p, top + 0.015, f"{v:.2f}", ha="center", va="bottom",
                         fontsize=7.5, color=INK_2, rotation=90 if nm > 4 else 0)
     ax.set_xticks(x, labels=eval_keys)
-    ax.set_ylim(0, min(1.0, float(np.nanmax(matrix)) + 0.18)
-                if np.isfinite(matrix).any() else 1.0)
+    hi = float(np.nanmax(matrix + (err[1] if err is not None else 0.0))) \
+        if np.isfinite(matrix).any() else 1.0
+    ax.set_ylim(0, min(1.0, hi + 0.18))
     ax.set_ylabel(metric)
     ax.grid(axis="y", zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
@@ -487,6 +553,11 @@ def plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
     ax.set_title(titled(f"MolecularIQ {metric} by eval set", note), pad=12)
     ax.legend(frameon=False, ncols=min(3, nm), loc="upper left",
               bbox_to_anchor=(0, 1.0), fontsize=9)
+    if err is not None:
+        conf = next((r.get("confidence", 0.95) for r in results.values()), 0.95)
+        fig.text(0.01, -0.02, f"error bars: {conf:.0%} confidence interval "
+                              "(bootstrap over questions / Wilson for pass@k)",
+                 color=MUTED, fontsize=8)
     save(fig, plots_dir, f"bars_{metric}", formats)
     plt.close(fig)
 
@@ -633,6 +704,22 @@ def plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats,
     plt.close(fig)
 
 
+def paired_significance(baseline_res, model_res):
+    """Paired bootstrap of (model - baseline) on the same questions.
+
+    Returns None unless both results carry per-question scores for the same
+    question set — a paired test is only valid when the two models answered
+    exactly the same questions in the same order.
+    """
+    if not baseline_res or not model_res:
+        return None
+    a = model_res.get("per_question_scores")
+    b = baseline_res.get("per_question_scores")
+    if not a or not b or len(a) != len(b):
+        return None
+    return paired_bootstrap_diff(a, b, seed=0)
+
+
 def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir,
                   note=""):
     import numpy as np
@@ -644,22 +731,30 @@ def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir
         w = csv.writer(f)
         w.writerow(["model", "label", "eval", "dataset", "split", "num_questions",
                     "n", "temperature", "avg_accuracy", "pass_at_1", "pass_at_3",
-                    f"delta_{metric}_vs_baseline"])
+                    f"{metric}_ci_low", f"{metric}_ci_high",
+                    f"delta_{metric}_vs_baseline", "p_value_vs_baseline",
+                    "n_distinct_answers", "top_answer_share"])
         for i, mkey in enumerate(model_keys):
             for j, ekey in enumerate(eval_keys):
                 res = results.get((mkey, ekey))
                 if res is None:
                     continue
-                delta = ""
+                delta = pval = ""
                 if brow is not None and mkey != bkey and not np.isnan(brow[j]) \
                         and not np.isnan(matrix[i, j]):
                     delta = f"{matrix[i, j] - brow[j]:+.4f}"
+                    sig = paired_significance(results.get((bkey, ekey)), res)
+                    if sig is not None:
+                        pval = f"{sig['p_value']:.4g}"
+                ci = res.get(f"{metric}_ci") or ["", ""]
+                div = res.get("answer_diversity") or {}
                 w.writerow([mkey, cfg["models"][mkey]["label"], ekey,
                             res["dataset"], res.get("split", ""),
                             res["num_questions"], res["n_samples_per_question"],
                             res["temperature"], res.get("avg_accuracy", ""),
                             res.get("pass_at_1", ""), res.get("pass_at_3", ""),
-                            delta])
+                            ci[0], ci[1], delta, pval,
+                            div.get("n_distinct", ""), div.get("top_share", "")])
     logger.info("wrote %s", csv_path)
 
     md_path = plots_dir / "summary.md"
@@ -667,20 +762,47 @@ def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir
         f.write(f"# Eval matrix — {metric}\n\n")
         if note:
             f.write(f"_{note}_\n\n")
-        f.write("Cell format: `metric (Δ vs baseline)`; `–` = not evaluated yet.\n\n")
+        f.write(f"Cell format: `{metric} [95% CI] (Δ vs baseline)`; "
+                "`–` = not evaluated yet.\n"
+                "`*` = Δ significant at p < 0.05 (paired bootstrap over the "
+                "same questions).\n\n")
         f.write("| model | " + " | ".join(eval_keys) + " |\n")
         f.write("|---" * (len(eval_keys) + 1) + "|\n")
         for i, mkey in enumerate(model_keys):
             cells = []
-            for j in range(len(eval_keys)):
+            for j, ekey in enumerate(eval_keys):
                 v = matrix[i, j]
                 if np.isnan(v):
                     cells.append("–")
-                elif brow is not None and mkey != bkey and not np.isnan(brow[j]):
-                    cells.append(f"{v:.3f} ({v - brow[j]:+.3f})")
-                else:
-                    cells.append(f"{v:.3f}")
+                    continue
+                res = results.get((mkey, ekey)) or {}
+                ci = res.get(f"{metric}_ci")
+                cell = f"{v:.3f}" + (f" [{ci[0]:.3f}, {ci[1]:.3f}]" if ci else "")
+                if brow is not None and mkey != bkey and not np.isnan(brow[j]):
+                    sig = paired_significance(results.get((bkey, ekey)), res)
+                    star = "*" if sig and sig["p_value"] < 0.05 else ""
+                    cell += f" ({v - brow[j]:+.3f}{star})"
+                cells.append(cell)
             f.write(f"| {cfg['models'][mkey]['label']} | " + " | ".join(cells) + " |\n")
+
+        # Degenerate-policy audit: a high score from one repeated answer is not
+        # evidence of task ability, so it is surfaced beside the table.
+        f.write("\n## Answer diversity\n\n")
+        f.write("A model can score well by repeating one lucky answer. "
+                "`top share` is the fraction of questions answered with the "
+                "single most common answer.\n\n")
+        f.write("| model | eval | distinct answers | top share | top answer |\n")
+        f.write("|---|---|---|---|---|\n")
+        for mkey in model_keys:
+            for ekey in eval_keys:
+                div = (results.get((mkey, ekey)) or {}).get("answer_diversity")
+                if not div:
+                    continue
+                flag = " ⚠️" if div.get("top_share", 0) > 0.5 else ""
+                top = str(div.get("top_answer"))[:40].replace("\n", " ")
+                f.write(f"| {cfg['models'][mkey]['label']} | {ekey} | "
+                        f"{div['n_distinct']}/{div['n_answers']} | "
+                        f"{div['top_share']:.0%}{flag} | `{top}` |\n")
     logger.info("wrote %s", md_path)
 
 
@@ -710,7 +832,7 @@ def plot_group(plt, cfg, results, gkey, args):
                           plots_dir, formats, note)
     plot_delta_heatmap(plt, cfg, matrix, model_keys, eval_keys, metric,
                        plots_dir, formats, note)
-    plot_grouped_bars(plt, cfg, matrix, model_keys, eval_keys, metric,
+    plot_grouped_bars(plt, cfg, results, matrix, model_keys, eval_keys, metric,
                       plots_dir, formats, note)
     plot_specialization(plt, cfg, matrix, model_keys, eval_keys, metric,
                         plots_dir, formats, note)

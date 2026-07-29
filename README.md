@@ -40,6 +40,7 @@ scripts/
   train_grpo.py           # STEP 2: GRPO training (TRL, full FT, vLLM rollouts)
   evaluate.py             # STEP 3: vLLM eval against any dataset + verifier metrics
   compare_evals.py        # STEP 4: run the model x dataset eval matrix + plot it
+  reproduce.sh            # one entry point that reruns STEPS 1-4 with pinned seeds
   env_leonardo.sh         # shared Leonardo environment (modules, caches, offline mode)
   setup_leonardo.sh       # one-time venv setup (login node)
   download_assets.sh      # prefetch model + datasets for offline compute nodes
@@ -55,6 +56,9 @@ src/moleculariq_grpo/
   rewards.py              # TRL reward functions wrapping the official verifier
   extraction.py           # official answer extraction (vendored, MIT)
   prompts.py              # official system prompt
+  stats.py                # confidence intervals + paired significance tests
+tests/
+  test_stats.py           # unit tests (pytest -q)
 ```
 
 ## Quickstart on Leonardo
@@ -153,6 +157,96 @@ JSONL datasets *and* any official `ml-jku/moleculariq-v0.0` split
 For leaderboard-grade numbers on the full benchmark you can also run the
 official [moleculariq-eval](https://github.com/ml-jku/moleculariq-eval)
 harness against the trained checkpoint; prompts/extraction here match it.
+
+## Reproducing everything (`scripts/reproduce.sh`)
+
+One entry point reruns the whole pipeline with pinned seeds, skipping any stage
+whose output already exists:
+
+```bash
+./scripts/reproduce.sh all        # datasets -> training -> eval matrix -> figures
+./scripts/reproduce.sh datasets   # or run a single stage
+./scripts/reproduce.sh report     # figures + tables only (CPU, no GPU needed)
+```
+
+On a login node with `sbatch` available, the training and evaluation stages
+submit the SLURM jobs in `slurm/` instead of running inline. Randomness is
+pinned throughout: datasets use `--seed 42`, training uses `seed: 42` from
+`configs/*.yaml`, and evaluation uses `--seed 0` with greedy decoding on the
+held-out sets. On the pinned stack in `requirements.txt` and the same GPU model
+this reproduces the reported numbers exactly; across different GPUs,
+floating-point non-determinism in the attention kernels moves individual
+accuracies by a few tenths of a percent — well inside the reported confidence
+intervals.
+
+Run the unit tests with:
+
+```bash
+pytest -q          # 27 tests covering the statistics in src/moleculariq_grpo/stats.py
+```
+
+## Uncertainty and significance
+
+Evaluating on a finite question sample is a measurement, so every headline
+number is reported with an interval, and every comparison against the baseline
+gets a paired test (`src/moleculariq_grpo/stats.py`):
+
+| Quantity | Estimator | Why |
+|---|---|---|
+| `avg_accuracy` | percentile bootstrap over questions | per-question scores are fractional when `--n > 1`, so no binomial assumption holds |
+| `pass_at_k` | Wilson score interval | strictly binomial per question; stays inside [0,1] near 0 and 1, where these small models live |
+| Δ vs baseline | paired bootstrap | both models answer the *same* questions, so pairing removes question difficulty and is far more sensitive than comparing two intervals |
+
+`evaluate.py` writes `avg_accuracy_ci`, `pass_at_k_ci` and the raw
+`per_question_scores` into each result JSON; `compare_evals.py` draws the
+intervals as error bars and marks significant differences (`p < 0.05`) with `*`
+in `summary.md`/`summary.csv`.
+
+## Control baseline (guard against degenerate policies)
+
+A model can score well on a generative task by emitting one lucky constant
+instead of reasoning. Two mechanisms make that visible rather than leaving it
+for a reader to discover:
+
+1. **Answer-diversity statistics.** Every evaluation reports the number of
+   distinct answers and the share taken by the single most common one.
+   `evaluate.py` logs a `DEGENERATE OUTPUT` warning above 50%, and
+   `summary.md` flags those rows with ⚠️.
+2. **A constant-answer control.** `--constant-answer` scores one fixed string
+   against every question with no model and no GPU:
+
+   ```bash
+   python scripts/evaluate.py --constant-answer '{"smiles": "CC=O"}' \
+       --dataset data/constraint/val.jsonl --out results/constraint_val_constant.json
+   ```
+
+   It is wired into `configs/eval_matrix.yaml` as the `constant` model and
+   appears in every group as a hatched gray bar. **Any result that does not
+   clear this floor is not evidence of task ability.** This matters most for
+   constraint generation, where a small molecule satisfies a large share of the
+   generated constraints — see "Known limitations" below.
+
+## Known limitations
+
+**The generated `constraint` val set is substantially easier than the official
+benchmark and should not be read as a measure of constraint-satisfaction
+ability.** `_build_constraint` in `src/moleculariq_grpo/data.py` anchors each
+constraint on a real molecule's property value `v` and then loosens it with a
+random operator. When `v = 0` — common for constructs such as bridgehead atoms,
+E/Z double bonds and R/S stereocenters — *every* operator branch yields a
+constraint that any molecule with zero of that property satisfies, and roughly
+one in six becomes a vacuous `>= 0` that holds for every valid molecule. The
+zero-answer cap that prevents this for count/index (`--max-zero-frac`) is not
+applied to constraint tasks (`data.py:405`).
+
+Consequence: the untrained baseline scores ≈0.54 on `constraint_val` but ≈0.06
+on the official `single_constraint_generation` split — a 9× gap, while count
+and index agree closely across both sources. The constant-answer control
+reproduces most of the 0.54, confirming the cause. Treat the official split as
+the result for constraint generation; the held-out constraint column is
+retained only as a training diagnostic. Fixing this properly means extending
+the zero-answer cap to constraints and rejecting vacuous constraints, then
+regenerating `data/constraint` and retraining.
 
 ## Comparing baseline vs single-task models (`compare_evals.py`)
 

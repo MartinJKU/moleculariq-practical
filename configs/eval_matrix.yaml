@@ -21,6 +21,12 @@ baseline: baseline          # key in `models` used as the reference for deltas
 # tags match (those cells get outlined in the heatmaps and drive the
 # specialization-vs-generalization plot).
 models:
+  # Control: answers every question with one fixed string, no model and no GPU.
+  # Any real result must clear this floor to mean anything — on constraint
+  # generation a trivial molecule satisfies a large share of the constraints.
+  constant:
+    constant_answer: '{"smiles": "CC=O"}'
+    label: constant answer (control)
   baseline:
     path: Qwen/Qwen2.5-0.5B-Instruct
     label: Qwen 0.5B (untrained)
@@ -83,13 +89,13 @@ groups:
     title: held-out generated val sets (greedy pass@1)
     subdir: heldout
     metric: avg_accuracy
-    models: [baseline, count, index, constraint]
+    models: [constant, baseline, count, index, constraint]
     evals:  [count_val, index_val, constraint_val]
   official:
     title: official MolecularIQ v0.0 benchmark (sampled pass@3)
     subdir: official
     metric: pass_at_3
-    models: [baseline, count, index, constraint]
+    models: [constant, baseline, count, index, constraint]
     evals:  [official_count, official_index, official_constraint]
   # Single-construct study kept separate from the overall-task comparison:
   # does the aromatic-ring specialist beat the general count model on aromatic
@@ -98,7 +104,7 @@ groups:
     title: single-construct study — counting aromatic rings
     subdir: aromatic_ring
     metric: avg_accuracy
-    models: [baseline, count, count_aromatic]
+    models: [constant, baseline, count, count_aromatic]
     evals:  [count_aromatic_val, count_val]
 
 # Defaults applied to every eval above (per-eval keys override them).
