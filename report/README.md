@@ -8,6 +8,8 @@ with no network access.
 
 ## Build
 
+**Linux / macOS:**
+
 ```bash
 ./build.sh          # syncs figures, then runs latexmk -xelatex + biber
 ./build.sh clean    # remove build artefacts
@@ -20,6 +22,31 @@ apt-get install texlive-xetex texlive-latex-extra texlive-fonts-recommended \
                 texlive-fonts-extra texlive-bibtex-extra texlive-plain-generic \
                 texlive-lang-german biber latexmk
 ```
+
+**Windows (PowerShell):**
+
+```powershell
+.\build.ps1          # syncs figures, then xelatex -> biber -> xelatex x2
+.\build.ps1 clean
+```
+
+Install [MiKTeX](https://miktex.org/download) and allow it to fetch missing
+packages on first run. `build.ps1` calls `xelatex` and `biber` directly instead
+of `latexmk`, because latexmk needs a Perl installation that MiKTeX does not
+ship — the four-pass sequence is what latexmk would run anyway.
+
+If PowerShell blocks the script, either allow it for the current session with
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, or run the four
+commands by hand.
+
+**The build must use XeLaTeX, not pdfLaTeX** — the JKU template loads the
+vendored TTF fonts in `fonts/`, which pdfLaTeX cannot handle. On Overleaf set
+this under Menu → Compiler → XeLaTeX.
+
+> Note: `report/figures/*.pdf` is git-ignored, so a `git clone`/`git pull` gives
+> you the sources but **not** the generated figures. Copy them across from the
+> cluster separately (or build there), otherwise the report renders placeholder
+> boxes where the plots should be.
 
 ## Figures
 
