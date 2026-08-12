@@ -73,23 +73,35 @@ the text before the runs finish.
 
 ## Before submitting
 
-The report is written around the results that exist so far. Everything still
-needing a real number is marked with a loud red `\tbd{...}` in the PDF — search
-the built PDF for `[TBD:` and make sure none survive. Currently outstanding:
+**All results are reported on the official `ml-jku/moleculariq-v0.0` splits.**
+The generated held-out set appears only in Section 4.4 as a methodological
+caveat — it is narrower than the benchmark and its constraint questions are
+largely satisfiable by a constant, so it inflated the earlier numbers. The
+single-construct (aromatic-ring) model is excluded; the report covers the three
+task families only.
+
+Everything still needing a real number is marked with a loud red `\tbd{...}` —
+search the built PDF for `[TBD:` and make sure none survive. Outstanding:
 
 1. **Author and supervisor.** `FIRSTNAME LASTNAME`, the e-mail address, and
    `SUPERVISOR NAME` in `main-report.tex` (near the top).
-2. **Constant-control row** of Table 1 — run `./scripts/reproduce.sh eval`,
-   which now includes the `constant` control model, and copy the row from
-   `results/matrix/plots/*/summary.md`.
-3. **Single-construct study** (Section 4.4) — the aromatic-ring model's numbers
-   from `results/matrix/plots/aromatic_ring/summary.md`.
+2. **Table 1** — the official pass@3 values currently in the table were read off
+   an earlier plot and carry no intervals. Replace them from
+   `results/matrix/plots/official/summary.csv`, and add the 95% CIs and
+   `p_value_vs_baseline` column. **The constant-control row is still empty.**
 
-The numbers already in the text (the full matrix in Table 1, the constraint
-diagnosis in Section 4.3, the degenerate-answer table) come from completed
-runs. Section 4.3's confidence interval and answer-diversity figures were
-computed from the actual `baseline__constraint_val` sample dump.
+This matters more than usual here: several claims in Section 4.1 turn on
+differences of a few points, and the report says so explicitly. Filling in the
+intervals is what converts them from suggestive to established.
 
-Re-running the pipeline after the fix in `data.py` (see "Known limitations" in
-the top-level README) would change the constraint column; if you do that,
-update Table 1 and Section 4.3 accordingly.
+Numbers that are already final: the answer-diversity table (Section 4.3) and
+the constraint-set control figures in Section 4.4, both from completed runs;
+the `0.530 [0.486, 0.574]` control interval was computed from the actual
+`baseline__constraint_val` sample dump.
+
+The `aromatic_ring` group is still defined in `configs/eval_matrix.yaml`. It is
+unused by the report — delete that block if you do not want it evaluated.
+
+Re-running after the `data.py` fix (see "Known limitations" in the top-level
+README) would change the constraint results; update Sections 4.1, 4.3 and 4.4
+if you do that.
