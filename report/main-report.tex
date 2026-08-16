@@ -297,11 +297,47 @@ That inversion is the most informative single number in the study, because the
 same model improves markedly on \emph{our own} counting questions
 (Section~\ref{sec:heldout-caveat}). A policy that gets better on the
 distribution it was trained on while getting worse on the benchmark has not
-learned to count; it has learned our generator. Our questions are drawn with a
-capped zero-answer fraction and a bounded SMILES length, making them narrower
-than the official split -- shorter molecules, smaller answers, a different mix
-of constructs. GRPO optimized for that narrower distribution at the benchmark's
-expense.
+learned to count; it has learned our generator.
+
+We measured that gap directly rather than asserting it
+(Table~\ref{tab:distgap}, produced by \texttt{scripts/compare\_distributions.py}).
+The result is more specific than we expected. The \emph{construct mix} is well
+matched -- total variation distance $0.11$ -- so the model is not being asked
+about different chemistry than it was trained on. What differs is difficulty
+along two axes. Official answers are roughly twice as large (median $8$ versus
+$3$ for counting, $10$ versus $5$ for indexing), and our training set devotes
+about a quarter of its questions to zero-valued answers against roughly $8\%$ in
+the benchmark -- a direct consequence of the \texttt{-{}-max-zero-frac 0.25} cap,
+which was introduced to prevent an ``always answer 0'' policy but which
+over-represents the easiest questions threefold. Our molecules are also somewhat
+smaller (median $21$ versus $28$ heavy atoms) while carrying a tail up to $164$
+heavy atoms that the benchmark, capped near $50$, never contains -- questions
+that are simultaneously out of distribution and effectively unanswerable.
+
+Individually none of these gaps is dramatic; all three point the same way, and
+all three make our training distribution easier than the benchmark. That is
+consistent with the inversion but, at this magnitude, unlikely to be its sole
+cause; Section~\ref{sec:limitations} discusses the reward-sparsity hypothesis we
+were not able to test in time.
+
+\begin{table}[!b]
+\centering
+\caption{%
+    Distance between our generated training questions and the official split,
+    as total variation distance (TVD; $0$ = identical, $1$ = disjoint) per axis.
+    The construct mix matches; difficulty does not.
+}\label{tab:distgap}
+\small
+\begin{tabularx}{\linewidth}{lXrr}
+\toprule
+\textbf{Axis} & \textbf{Generated vs official} & \textbf{count} & \textbf{index} \\
+\midrule
+Construct mix     & matched                                  & 0.11 & 0.12 \\
+Answer magnitude  & ours smaller (median 3 vs 8 / 5 vs 10)   & 0.29 & 0.28 \\
+Molecule size     & ours smaller (median 21 vs 28 heavy atoms) & 0.20 & 0.20 \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
 The absolute magnitudes deserve emphasis too. Even the best cells sit between
 $0.08$ and $0.14$ pass@3. A $0.5$B-parameter model remains far from competent at
@@ -474,6 +510,21 @@ extending the zero-answer cap to constraint tasks and rejecting vacuous
 constraints, then regenerating the data and retraining -- work we did not have
 the compute budget to redo. Until then the constraint-trained model is best
 regarded as a reward-hacked artefact.
+
+\emph{The reward may be too sparse to train on.} GRPO computes each completion's
+advantage relative to its own group, so a group whose completions all score
+identically contributes no gradient at all. With our strictly binary correctness
+reward this happens whenever a prompt is always solved or never solved, leaving
+only the prompts the policy is already borderline on to drive learning. If that
+fraction is large, most of the $500$ steps did little, and the narrow band of
+prompts that did train the model would be concentrated in the easy tail of our
+generator -- which would explain the inversion more completely than the moderate
+distribution gaps in Table~\ref{tab:distgap} do on their own. We added
+instrumentation for this (\texttt{RewardGroupMonitor}, which logs the fraction of
+zero-variance groups) but did not have time to rerun training with it. Should it
+confirm the hypothesis, the natural remedy is a graded reward that orders
+incorrect answers by distance from the target, so that a group of uniformly
+wrong completions still carries a gradient.
 
 \emph{Single seed.} Each configuration was trained once. Our intervals capture
 uncertainty from the finite evaluation sample, not from training stochasticity,
