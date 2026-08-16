@@ -289,6 +289,55 @@ A TVD above ~0.3 on any axis means the generator and the benchmark pose
 meaningfully different tasks, and the generator should be rebalanced on that
 axis before concluding anything about what training did or did not learn.
 
+## Graded count reward (`count_partial_credit`)
+
+Instrumenting a real counting run found **38.4% of GRPO groups uniformly wrong
+and 0% uniformly correct**: a third of the rollout budget carried no
+correctness signal. In those groups the only surviving gradient came from the
+format shaping term — which is exactly what the training curve shows being
+learned (format reward 0.14 → 0.96 over 20 steps, while correctness stayed
+flat).
+
+A binary reward cannot tell "off by one" from "off by twenty", yet ordering
+those failures is precisely what would point the policy somewhere useful. The
+graded reward supplies that ordering:
+
+```
+reward = 1.0                              verifier accepts
+         λ · exp(-|pred - true| / τ)      a number was parsed but is wrong
+         0.0                              nothing usable produced
+```
+
+Enable it with two keys in a training config (see `configs/count_graded.yaml`,
+which is otherwise byte-identical to `configs/count.yaml`):
+
+```yaml
+count_partial_credit: 0.15   # λ — 0.0 disables (default)
+count_partial_tau: 3.0       # τ — decay rate of the credit
+```
+
+```bash
+sbatch slurm/train.slurm configs/count_graded.yaml
+```
+
+Three properties make this safe to turn on:
+
+- **Exact match always wins.** Partial credit is capped at `λ·exp(-1/τ)` =
+  **0.107**, an order of magnitude below the 1.0 an exact answer scores. No
+  approximate answer can outrank a correct one, so the policy optimum is
+  unchanged — only the gradient around it becomes informative.
+- **Evaluation is untouched.** `evaluate.py` calls `score_answer`, which stays
+  strictly binary, so reported numbers remain comparable with the official
+  protocol. Partial credit exists only in the training reward.
+- **Counting only.** Index answers are lists and constraint answers are
+  molecules; neither has a meaningful scalar distance, and inventing one for
+  constraint generation would risk a fresh reward-hacking surface on a task
+  that already had one. Those tasks keep the binary reward.
+
+Verified effect on a group of 16 uniformly-wrong completions: no-signal
+fraction 100% → 0%, group std 0.0000 → 0.0273. Re-run the probe from the
+diagnostics section against both configs to compare on real data.
+
 ## Known limitations
 
 **The generated `constraint` val set is substantially easier than the official

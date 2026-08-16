@@ -123,6 +123,56 @@ def correctness_reward(
     return rewards
 
 
+def make_graded_correctness_reward(lam: float, tau: float = 3.0):
+    """Build a correctness reward with partial credit for near-miss counts.
+
+    Identical to :func:`correctness_reward` except that a count answer the
+    verifier rejects earns a small credit scaled by how close it was. This
+    exists to rescue GRPO groups in which every completion is wrong: a binary
+    reward makes those groups uniformly zero, hence gradient-free (measured at
+    38.4% of groups on counting), while a graded one orders the failures so the
+    group still points somewhere.
+
+    Partial credit is capped well below 1.0 (see :mod:`.shaping`), so an exact
+    answer always outranks an approximate one and the optimum is unchanged.
+    Only count tasks are graded; index and constraint answers have no
+    meaningful scalar distance and keep the binary reward.
+
+    Evaluation is unaffected: ``scripts/evaluate.py`` calls
+    :func:`score_answer`, which stays strictly binary.
+    """
+    from .shaping import count_partial_credit
+
+    def graded_correctness_reward(
+        prompts=None,
+        completions=None,
+        completion_ids=None,
+        task_type=None,
+        target=None,
+        constraints=None,
+        **kwargs,
+    ) -> list[float]:
+        n = len(completions)
+        task_type = task_type if task_type is not None else [None] * n
+        target = target if target is not None else [None] * n
+        constraints = constraints if constraints is not None else [None] * n
+
+        rewards = []
+        for completion, tt, tgt, cons in zip(completions, task_type, target,
+                                             constraints):
+            text = _completion_text(completion)
+            score = score_answer(text, tt, target=tgt, constraints=cons)
+            if score <= 0.0 and _normalize_task_type(tt) == "count":
+                score = count_partial_credit(text, tgt, lam=lam, tau=tau)
+            rewards.append(score)
+        return rewards
+
+    # TRL identifies reward functions by __name__ in its logged metrics; keep
+    # the base name so switching reward variants does not rename the column.
+    graded_correctness_reward.__name__ = "correctness_reward"
+    return graded_correctness_reward
+
+
 def format_reward(
     prompts=None,
     completions=None,

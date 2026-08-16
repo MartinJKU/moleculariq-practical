@@ -92,7 +92,21 @@ def main():
     grpo_kwargs.setdefault("output_dir", cfg.get("output_dir", "outputs/run"))
 
     # Reward setup: correctness is mandatory, format shaping optional.
-    correctness = reward_module.correctness_reward
+    # `count_partial_credit` > 0 switches the correctness reward to the graded
+    # variant, which gives a near-miss count answer a small credit so that a
+    # group of uniformly wrong completions still carries a gradient. Exact
+    # answers still dominate, and evaluation is unaffected (evaluate.py uses
+    # the strictly binary score_answer).
+    partial_credit = float(cfg.get("count_partial_credit", 0.0))
+    if partial_credit > 0:
+        correctness = reward_module.make_graded_correctness_reward(
+            lam=partial_credit, tau=float(cfg.get("count_partial_tau", 3.0)))
+        logger.info("Correctness reward: GRADED (lambda=%.3f, tau=%.1f) — "
+                    "near-miss counts earn up to %.3f",
+                    partial_credit, float(cfg.get("count_partial_tau", 3.0)),
+                    partial_credit)
+    else:
+        correctness = reward_module.correctness_reward
     # Optional instrumentation: records how many GRPO groups produce no
     # gradient (every completion scored identically). Pass-through, so it
     # cannot change the rewards or the training result.
