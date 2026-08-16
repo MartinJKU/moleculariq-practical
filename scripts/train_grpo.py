@@ -92,7 +92,18 @@ def main():
     grpo_kwargs.setdefault("output_dir", cfg.get("output_dir", "outputs/run"))
 
     # Reward setup: correctness is mandatory, format shaping optional.
-    reward_funcs = [reward_module.correctness_reward]
+    correctness = reward_module.correctness_reward
+    # Optional instrumentation: records how many GRPO groups produce no
+    # gradient (every completion scored identically). Pass-through, so it
+    # cannot change the rewards or the training result.
+    if cfg.get("monitor_reward_groups", True):
+        from moleculariq_grpo.monitoring import RewardGroupMonitor
+        correctness = RewardGroupMonitor(
+            correctness,
+            log_every=int(cfg.get("monitor_log_every", 10)),
+            out_path=Path(grpo_kwargs["output_dir"]) / "reward_groups.jsonl",
+        )
+    reward_funcs = [correctness]
     reward_weights = [float(cfg.get("correctness_weight", 1.0))]
     format_weight = float(cfg.get("format_weight", 0.0))
     if format_weight > 0:

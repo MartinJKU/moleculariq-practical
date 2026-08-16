@@ -123,13 +123,39 @@ stage_report() {
     echo "  The report in report/ includes these PDFs directly."
 }
 
+# --------------------------------------------------------------------------
+# Diagnostics: is training measuring the same task the benchmark measures?
+# --------------------------------------------------------------------------
+stage_diagnose() {
+    log "Diagnostics: generated training data vs official benchmark splits"
+    local specs=(
+        "count:data/count/train.jsonl:single_count"
+        "index:data/index/train.jsonl:single_index"
+    )
+    for spec in "${specs[@]}"; do
+        IFS=: read -r task gen split <<< "$spec"
+        if [[ ! -f "$gen" ]]; then
+            echo "  [skip] $gen not found — run stage 'datasets' first"
+            continue
+        fi
+        python scripts/compare_distributions.py \
+            --task "$task" --generated "$gen" \
+            --official-split "$split" --out "results/dist/$task"
+    done
+    echo
+    echo "  Distribution comparisons in results/dist/ (figure + JSON per task)."
+    echo "  A TVD above ~0.3 on any axis means the generator and the benchmark"
+    echo "  pose meaningfully different tasks."
+}
+
 case "$STAGE" in
     datasets) stage_datasets ;;
     train)    stage_train ;;
     eval)     stage_eval ;;
+    diagnose) stage_diagnose ;;
     report)   stage_report ;;
     all)      stage_datasets; stage_train; stage_eval; stage_report ;;
-    *)        echo "usage: $0 {datasets|train|eval|report|all}" >&2; exit 2 ;;
+    *)        echo "usage: $0 {datasets|train|eval|diagnose|report|all}" >&2; exit 2 ;;
 esac
 
 log "Done: stage '$STAGE'"

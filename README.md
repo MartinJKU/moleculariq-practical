@@ -226,6 +226,69 @@ for a reader to discover:
    constraint generation, where a small molecule satisfies a large share of the
    generated constraints — see "Known limitations" below.
 
+## Diagnosing a weak training signal
+
+Two instruments answer the question "why did training on task X not improve
+task X on the benchmark?", both cheap and neither needing a GPU.
+
+### 1. Is GRPO getting any gradient? (`monitoring.py`)
+
+GRPO computes each completion's advantage *relative to its own group* — the
+completions sampled for the same prompt. If every completion in a group scores
+identically, `r_i - mean(r) = 0` and **that group contributes no gradient at
+all**. With a binary correctness reward this is common:
+
+- an easy prompt the model always solves → all rewards 1.0 → no gradient
+- a hard prompt the model never solves → all rewards 0.0 → no gradient
+
+so only prompts the policy is *already borderline* on actually train it. This
+is invisible in the mean-reward curve: a run can show a healthy mean while most
+groups are saturated and teaching nothing.
+
+`RewardGroupMonitor` wraps the correctness reward and records the fraction of
+degenerate groups. It is enabled by default (`monitor_reward_groups: true` in
+the training config), is a transparent pass-through — it cannot change rewards
+or training — and writes `reward_groups.jsonl` into the run's `output_dir`,
+logging every 10 calls:
+
+```
+[reward groups] call 30 | no-signal 71.2% (all-wrong 58.1%, all-correct 13.1%)
+                | mean group std 0.104 | mean reward 0.180
+```
+
+Read it as a diagnosis: a high **all-wrong** share means the reward is too
+sparse (consider a graded reward that orders incorrect answers, so a group of
+16 wrong answers still has variance); a high **all-correct** share means the
+prompts are too easy and the run has saturated.
+
+### 2. Is training the same task as the benchmark? (`compare_distributions.py`)
+
+Our count-trained model improves on our generated held-out questions but
+degrades on the official split — the signature of fitting the generator rather
+than the task. This script compares the two distributions directly on CPU:
+
+```bash
+./scripts/reproduce.sh diagnose        # both count and index
+
+# or one task:
+python scripts/compare_distributions.py --task count \
+    --generated data/count/train.jsonl \
+    --official-split single_count --out results/dist/count
+```
+
+It reports the total variation distance (TVD, 0 = identical, 1 = disjoint) on
+three axes, and writes a three-panel comparison figure plus a JSON summary:
+
+| Axis | Why it matters |
+|---|---|
+| construct mix (`features`) | difficulty varies enormously by construct — counting rings is far easier than counting carbon atoms, so a different mix alone can flip a result |
+| answer magnitude | counting to 3 and counting to 27 are different tasks |
+| molecule size | heavy-atom count, approximated from SMILES |
+
+A TVD above ~0.3 on any axis means the generator and the benchmark pose
+meaningfully different tasks, and the generator should be rebalanced on that
+axis before concluding anything about what training did or did not learn.
+
 ## Known limitations
 
 **The generated `constraint` val set is substantially easier than the official
