@@ -113,8 +113,11 @@ PYEOF
             continue
         fi
         if command -v sbatch >/dev/null 2>&1; then
-            echo "  [submit] sbatch slurm/train.slurm --config $cfg"
-            sbatch slurm/train.slurm --config "$cfg"
+            # train.slurm takes the config POSITIONALLY (it shifts $1 and
+            # forwards the rest to train_grpo.py) -- passing --config here
+            # would be consumed as the config path itself.
+            echo "  [submit] sbatch slurm/train.slurm $cfg"
+            sbatch slurm/train.slurm "$cfg"
         else
             echo "  [run ] $cfg"
             "$PY" scripts/train_grpo.py --config "$cfg"
