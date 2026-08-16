@@ -19,11 +19,17 @@
 #     ./scripts/reproduce.sh train        # stage 2 only (submits 4 SLURM jobs)
 #     ./scripts/reproduce.sh eval         # stage 3 only (the eval matrix)
 #     ./scripts/reproduce.sh report       # stage 4 only (figures + tables)
-#     ./scripts/reproduce.sh all          # everything, in order
+#     ./scripts/reproduce.sh diagnose     # training data vs benchmark (CPU)
+#     ./scripts/reproduce.sh all          # stages 1-4, in order
 #
 # On Leonardo, stages 1-3 need a compute allocation: run them via the SLURM
 # wrappers in slurm/ (this script prints the exact sbatch commands when it
-# detects it is running on a login node). Stage 4 is CPU-only and runs anywhere.
+# detects it is running on a login node). The report and diagnose stages are
+# CPU-only and run anywhere.
+#
+# The project environment (modules + venv) is loaded automatically via
+# scripts/env_leonardo.sh, so this works from a bare login shell. Override the
+# interpreter with PYTHON=/path/to/python if you need a specific one.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -35,6 +41,30 @@ TRAIN_SIZE=20000
 VAL_SIZE=500
 
 log() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+# --- environment -----------------------------------------------------------
+# Load the project environment (modules, caches, venv) the same way the SLURM
+# wrappers do, so this script works from a bare login shell with nothing
+# activated. Sourced with errexit/nounset off: `module` is absent on machines
+# that are not Leonardo, and a non-zero return there must not abort the run.
+if [ -f "$REPO_ROOT/scripts/env_leonardo.sh" ]; then
+    set +eu
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/scripts/env_leonardo.sh"
+    set -eu
+fi
+
+# Resolve an interpreter explicitly rather than assuming `python` is on PATH --
+# outside an activated venv many systems provide only `python3`.
+PY="${PYTHON:-python}"
+command -v "$PY" >/dev/null 2>&1 || PY=python3
+if ! command -v "$PY" >/dev/null 2>&1; then
+    echo "ERROR: no python interpreter found." >&2
+    echo "  Activate the project venv first:  source scripts/env_leonardo.sh" >&2
+    echo "  (or set PYTHON=/path/to/python and re-run)" >&2
+    exit 1
+fi
+echo "Using interpreter: $(command -v "$PY")"
 
 # --------------------------------------------------------------------------
 # Stage 1: datasets
@@ -55,7 +85,7 @@ stage_datasets() {
         fi
         echo "  [run ] $out"
         # shellcheck disable=SC2086  # $constructs is intentionally word-split
-        python scripts/create_datasets.py \
+        "$PY" scripts/create_datasets.py \
             --task "$task" \
             --out "$out" \
             --train-size "$TRAIN_SIZE" \
@@ -73,10 +103,10 @@ stage_train() {
     for cfg in configs/count.yaml configs/index.yaml configs/constraint.yaml \
                configs/count_aromatic_ring.yaml; do
         local out
-        out="$(python - "$cfg" <<'PY'
+        out="$("$PY" - "$cfg" <<'PYEOF'
 import sys, yaml
 print(yaml.safe_load(open(sys.argv[1]))["output_dir"])
-PY
+PYEOF
 )"
         if [[ -f "$out/config.json" ]]; then
             echo "  [skip] $out already trained"
@@ -87,7 +117,7 @@ PY
             sbatch slurm/train.slurm --config "$cfg"
         else
             echo "  [run ] $cfg"
-            python scripts/train_grpo.py --config "$cfg"
+            "$PY" scripts/train_grpo.py --config "$cfg"
         fi
     done
     if command -v sbatch >/dev/null 2>&1; then
@@ -107,7 +137,7 @@ stage_eval() {
         sbatch slurm/eval_matrix.slurm
         echo "  When the job finishes, run: ./scripts/reproduce.sh report"
     else
-        python scripts/compare_evals.py run --config configs/eval_matrix.yaml
+        "$PY" scripts/compare_evals.py run --config configs/eval_matrix.yaml
     fi
 }
 
@@ -116,7 +146,7 @@ stage_eval() {
 # --------------------------------------------------------------------------
 stage_report() {
     log "Stage 4/4: rendering figures and summary tables"
-    python scripts/compare_evals.py plot \
+    "$PY" scripts/compare_evals.py plot \
         --config configs/eval_matrix.yaml --formats png pdf
     echo
     echo "  Figures + summary.csv/summary.md per group under results/matrix/plots/"
@@ -138,7 +168,7 @@ stage_diagnose() {
             echo "  [skip] $gen not found — run stage 'datasets' first"
             continue
         fi
-        python scripts/compare_distributions.py \
+        "$PY" scripts/compare_distributions.py \
             --task "$task" --generated "$gen" \
             --official-split "$split" --out "results/dist/$task"
     done
