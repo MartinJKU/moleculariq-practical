@@ -660,7 +660,10 @@ def plot_complexity(plt, cfg, results, model_keys, eval_keys, plots_dir, formats
     for ax in axes.flat[len(panels):]:
         ax.set_visible(False)
     fig.colorbar(im, ax=axes, label="avg_accuracy", shrink=0.8)
-    fig.suptitle(titled("Accuracy by molecule complexity bin (heavy-atom count)",
+    # `complexity_bin` is the molecule pool's own field, carried through
+    # unchanged; the bin edges (250 / 1000) are molecular weight, not an atom
+    # count, so the label deliberately does not name a unit we cannot verify.
+    fig.suptitle(titled("Accuracy by molecule complexity bin",
                         note).replace("\n", " — "), color=INK)
     save(fig, plots_dir, "heatmap_complexity", formats)
     plt.close(fig)

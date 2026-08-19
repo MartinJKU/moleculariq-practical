@@ -1,0 +1,74 @@
+# GRPO on single_count, with BOTH known defects fixed:
+#   1. graded correctness reward  (fixes gradient sparsity: 38.4% -> 5.0% of
+#      groups with no correctness signal, measured)
+#   2. training data matched to the benchmark distribution (see below)
+# and a longer schedule, which only pays off once (1) has made the steps useful.
+#
+# Why the data is regenerated (measured by scripts/compare_distributions.py):
+# our original data/count is systematically EASIER than the official split on
+# every axis that matters, while the construct mix already matches (TVD 0.11):
+#
+#   axis              ours          official      effect
+#   answer magnitude  median 3      median 8      teaches a small-number prior
+#   zero answers      ~25%          ~8%           3x over-representation of the
+#                                                 easiest possible question
+#   molecule size     median 21     median 28     trains on smaller graphs,
+#                     max 164       max ~50       plus a tail the benchmark
+#                                                 never contains
+#
+# A policy trained to expect small answers on small molecules will systematically
+# undercount on the benchmark, which is consistent with the observed inversion
+# (count training improved our held-out set but LOWERED official pass@3 from
+# 0.13 to 0.07; the graded reward recovered it to 0.12, i.e. back to baseline).
+#
+# Generate the matched dataset first:
+#   python scripts/create_datasets.py --task count --out data/count_matched \
+#       --train-size 20000 --val-size 500 --seed 42 \
+#       --max-zero-frac 0.08 --complexity-bins 250-1000 --max-smiles-len 80
+#
+# Then CHECK the gap actually closed before spending a training run on it:
+#   python scripts/compare_distributions.py --task count \
+#       --generated data/count_matched/train.jsonl \
+#       --official-split single_count --out results/dist/count_matched
+#   # target: TVD magnitude and size both well below the 0.29 / 0.20 baseline
+#
+# Run:  sbatch slurm/train.slurm configs/count_matched.yaml
+model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+dataset_dir: data/count_matched
+output_dir: outputs/count-matched-qwen2.5-0.5b
+
+correctness_weight: 1.0
+format_weight: 0.2
+
+# Graded correctness (see configs/count_graded.yaml and README).
+count_partial_credit: 0.15
+count_partial_tau: 3.0
+
+grpo:
+  output_dir: outputs/count-matched-qwen2.5-0.5b
+  per_device_train_batch_size: 16    # larger OOMs 64GB A100 (logits are batch x len x 152k vocab)
+  gradient_accumulation_steps: 16    # set to 4 on 4 GPUs
+  num_generations: 16
+  max_completion_length: 512
+  temperature: 1.0
+  top_p: 1.0
+  learning_rate: 1.0e-6
+  lr_scheduler_type: constant_with_warmup
+  warmup_steps: 20
+  # 500 steps was chosen when most groups produced no gradient; with the graded
+  # reward the steps do work, so the budget is raised. ~16 s/step on one A100
+  # puts this near 9 h, inside train.slurm's 24 h limit.
+  max_steps: 2000
+  max_grad_norm: 1.0
+  beta: 0.0
+  bf16: true
+  gradient_checkpointing: true
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.25
+  vllm_max_model_length: 2048
+  logging_steps: 1
+  save_steps: 250
+  save_total_limit: 4
+  report_to: ["tensorboard"]
+  seed: 42

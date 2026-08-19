@@ -41,6 +41,11 @@ models:
     path: outputs/count-graded-qwen2.5-0.5b
     label: GRPO count (graded)
     task: count
+  # Graded reward + benchmark-matched training data + 2000 steps.
+  count_matched:
+    path: outputs/count-matched-qwen2.5-0.5b
+    label: GRPO count (matched)
+    task: count
   index:
     path: outputs/index-qwen2.5-0.5b
     label: GRPO index
@@ -96,13 +101,13 @@ groups:
     title: held-out generated val sets (greedy pass@1)
     subdir: heldout
     metric: avg_accuracy
-    models: [constant, baseline, count, count_graded, index, constraint]
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint]
     evals:  [count_val, index_val, constraint_val]
   official:
     title: official MolecularIQ v0.0 benchmark (sampled pass@3)
     subdir: official
     metric: pass_at_3
-    models: [constant, baseline, count, count_graded, index, constraint]
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint]
     evals:  [official_count, official_index, official_constraint]
   # Single-construct study kept separate from the overall-task comparison:
   # does the aromatic-ring specialist beat the general count model on aromatic
