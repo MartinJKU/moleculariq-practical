@@ -240,7 +240,11 @@ def main():
         "pass_at_1_ci": list(wilson_interval(pass1_hits, n_q, args.confidence)),
         # Per-question scores, kept so downstream tooling can run *paired*
         # significance tests between models without re-reading the sample dump.
+        # pass@k is stored as its own per-question 0/1 vector: a paired test
+        # must be run on the same quantity that is being reported, and pass@k
+        # is not recoverable from the mean score.
         "per_question_scores": metrics_acc,
+        "per_question_pass_at_1": [pass_at_k(p["rewards"], 1) for p in per_question],
         "answer_diversity": answer_diversity(
             [p["extracted"][0] if p["extracted"] else None for p in per_question]),
         "by_task_type": {k: sum(v) / len(v) for k, v in sorted(by_task.items())},
@@ -249,10 +253,12 @@ def main():
     }
     for k in (3, 5):
         if args.n >= k:
-            hits = sum(pass_at_k(p["rewards"], k) for p in per_question)
+            per_q = [pass_at_k(p["rewards"], k) for p in per_question]
+            hits = sum(per_q)
             results[f"pass_at_{k}"] = hits / n_q
             results[f"pass_at_{k}_ci"] = list(
                 wilson_interval(hits, n_q, args.confidence))
+            results[f"per_question_pass_at_{k}"] = per_q
 
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)

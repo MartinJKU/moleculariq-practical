@@ -707,17 +707,25 @@ def plot_features(plt, cfg, results, model_keys, ekey, plots_dir, formats,
     plt.close(fig)
 
 
-def paired_significance(baseline_res, model_res):
+def paired_significance(baseline_res, model_res, metric="avg_accuracy"):
     """Paired bootstrap of (model - baseline) on the same questions.
 
-    Returns None unless both results carry per-question scores for the same
-    question set — a paired test is only valid when the two models answered
-    exactly the same questions in the same order.
+    The test runs on the **same quantity that is being reported**: pass@k is a
+    different statistic from the mean score and is not recoverable from it, so
+    testing one while displaying the other would put a p-value next to a delta
+    it does not describe.
+
+    Returns None unless both results carry the matching per-question vector for
+    the same question set — a paired test is only valid when the two models
+    answered exactly the same questions in the same order. Results produced
+    before that vector was recorded yield None rather than a mismatched test.
     """
     if not baseline_res or not model_res:
         return None
-    a = model_res.get("per_question_scores")
-    b = baseline_res.get("per_question_scores")
+    key = ("per_question_scores" if metric == "avg_accuracy"
+           else f"per_question_{metric}")
+    a = model_res.get(key)
+    b = baseline_res.get(key)
     if not a or not b or len(a) != len(b):
         return None
     return paired_bootstrap_diff(a, b, seed=0)
@@ -746,7 +754,7 @@ def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir
                 if brow is not None and mkey != bkey and not np.isnan(brow[j]) \
                         and not np.isnan(matrix[i, j]):
                     delta = f"{matrix[i, j] - brow[j]:+.4f}"
-                    sig = paired_significance(results.get((bkey, ekey)), res)
+                    sig = paired_significance(results.get((bkey, ekey)), res, metric)
                     if sig is not None:
                         pval = f"{sig['p_value']:.4g}"
                 ci = res.get(f"{metric}_ci") or ["", ""]
@@ -782,7 +790,7 @@ def write_summary(cfg, results, matrix, model_keys, eval_keys, metric, plots_dir
                 ci = res.get(f"{metric}_ci")
                 cell = f"{v:.3f}" + (f" [{ci[0]:.3f}, {ci[1]:.3f}]" if ci else "")
                 if brow is not None and mkey != bkey and not np.isnan(brow[j]):
-                    sig = paired_significance(results.get((bkey, ekey)), res)
+                    sig = paired_significance(results.get((bkey, ekey)), res, metric)
                     star = "*" if sig and sig["p_value"] < 0.05 else ""
                     cell += f" ({v - brow[j]:+.3f}{star})"
                 cells.append(cell)
