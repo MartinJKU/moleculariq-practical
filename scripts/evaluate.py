@@ -150,6 +150,23 @@ def main():
                     args.constant_answer)
         texts_per_question = [[args.constant_answer] * args.n for _ in rows]
     else:
+        # Fail early and legibly on a login node. Without a visible GPU vLLM
+        # gets an empty device string and dies deep inside its config layer
+        # ("Device string must not be empty"), which does not hint at the
+        # actual cause. Only model runs need a GPU; --constant-answer does not.
+        try:
+            import torch
+            no_gpu = not torch.cuda.is_available()
+        except ImportError:
+            no_gpu = False          # let vLLM report a missing install itself
+        if no_gpu:
+            raise SystemExit(
+                "No CUDA device visible — vLLM cannot run here.\n"
+                "  Leonardo login nodes have no GPU; submit to a compute node:\n"
+                "    sbatch slurm/eval.slurm <the same arguments>\n"
+                "  (add --qos=boost_qos_dbg --time=00:30:00 before the script "
+                "for a short debug run)")
+
         from transformers import AutoTokenizer
         from vllm import LLM, SamplingParams
 
