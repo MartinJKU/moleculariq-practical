@@ -154,18 +154,24 @@ def main():
         # gets an empty device string and dies deep inside its config layer
         # ("Device string must not be empty"), which does not hint at the
         # actual cause. Only model runs need a GPU; --constant-answer does not.
+        #
+        # This probe must NOT use torch.cuda.is_available(): that initializes
+        # CUDA in this process, and vLLM then forks its engine subprocess,
+        # which dies with "Cannot re-initialize CUDA in forked subprocess".
+        # Loading the driver library only resolves symbols — it creates no
+        # CUDA context, so it is safe to do before a fork.
+        import ctypes
         try:
-            import torch
-            no_gpu = not torch.cuda.is_available()
-        except ImportError:
-            no_gpu = False          # let vLLM report a missing install itself
+            ctypes.CDLL("libcuda.so.1")
+            no_gpu = False
+        except OSError:
+            no_gpu = True
         if no_gpu:
             raise SystemExit(
-                "No CUDA device visible — vLLM cannot run here.\n"
+                "No CUDA device visible (libcuda.so.1 not loadable) — vLLM "
+                "cannot run here.\n"
                 "  Leonardo login nodes have no GPU; submit to a compute node:\n"
-                "    sbatch slurm/eval.slurm <the same arguments>\n"
-                "  (add --qos=boost_qos_dbg --time=00:30:00 before the script "
-                "for a short debug run)")
+                "    sbatch --time=00:30:00 slurm/eval.slurm <the same arguments>")
 
         from transformers import AutoTokenizer
         from vllm import LLM, SamplingParams
