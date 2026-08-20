@@ -135,6 +135,7 @@ class RewardGroupMonitor:
         self.calls = 0
         self._totals: Counter = Counter()
         self._batches = 0
+        self._last_by_task: dict = {}
         # TRL identifies reward functions by __name__ for its logged metrics.
         self.__name__ = getattr(reward_func, "__name__", "reward")
         if self.out_path:
@@ -143,7 +144,21 @@ class RewardGroupMonitor:
     def __call__(self, *args, **kwargs) -> list[float]:
         rewards = self.reward_func(*args, **kwargs)
         try:
-            stats = summarize_groups(group_by_prompt(kwargs.get("prompts"), rewards))
+            prompts = kwargs.get("prompts")
+            groups = group_by_prompt(prompts, rewards)
+            stats = summarize_groups(groups)
+            # In a multitask run the aggregate hides the case that matters: one
+            # task starved of signal while the others train normally. Break the
+            # statistics down per task whenever task labels are available.
+            task_type = kwargs.get("task_type")
+            if task_type:
+                task_groups = group_by_prompt(prompts, list(task_type))
+                if len(task_groups) == len(groups):
+                    by_task: dict[str, list[list[float]]] = {}
+                    for g, tg in zip(groups, task_groups):
+                        by_task.setdefault(str(tg[0]) if tg else "unknown", []).append(g)
+                    stats["by_task"] = {t: summarize_groups(gs)
+                                        for t, gs in sorted(by_task.items())}
             self._record(stats)
         except Exception:
             # Instrumentation must never take down a training run.
@@ -152,6 +167,7 @@ class RewardGroupMonitor:
 
     def _record(self, stats: dict) -> None:
         self.calls += 1
+        self._last_by_task = stats.get("by_task") or {}
         if stats["n_groups"] and stats["frac_no_signal"] == stats["frac_no_signal"]:
             self._batches += 1
             for key in ("frac_no_signal", "frac_all_zero", "frac_all_max",
@@ -169,6 +185,11 @@ class RewardGroupMonitor:
                 self.calls, 100 * avg["frac_no_signal"],
                 100 * avg["frac_all_zero"], 100 * avg["frac_all_max"],
                 avg["mean_group_std"], avg["mean_reward"])
+            if self._last_by_task:
+                parts = [f"{t}: no-signal {100*s['frac_no_signal']:.0f}% "
+                         f"reward {s['mean_reward']:.3f}"
+                         for t, s in sorted(self._last_by_task.items())]
+                logger.info("[reward groups]   per task | %s", "  |  ".join(parts))
             if avg["frac_no_signal"] > 0.5:
                 logger.warning(
                     "[reward groups] over half of all groups produce no gradient "

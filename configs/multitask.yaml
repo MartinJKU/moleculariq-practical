@@ -1,0 +1,90 @@
+# ONE model trained on all three MolecularIQ task families at once.
+#
+#   sbatch slurm/train.slurm configs/multitask.yaml
+#
+# This is the target artefact: a single policy that counts, indexes AND
+# generates constrained molecules, rather than three specialists.
+#
+# What the single-task experiments established, and what this config does
+# about each finding:
+#
+# 1. Gains do not transfer between tasks. Off-diagonal cells sat at or below
+#    the untrained baseline, so a multitask run is managing INTERFERENCE, not
+#    harvesting synergy. -> `dataset_mix: balanced` plus a shuffled pool, so
+#    every batch is a random mix of the three tasks and no task can dominate
+#    the averaged gradient. Watch the per-task lines in the reward-group log:
+#    the failure mode to catch is one task's no-signal fraction climbing while
+#    the others train.
+#
+# 2. A binary reward left 38.4% of counting groups gradient-free.
+#    -> `count_partial_credit` keeps the graded reward, which cut that to 5.0%
+#    and doubled official avg_accuracy (0.052 -> 0.104).
+#
+# 3. Constraint generation is the reward-hacking risk. The single-task
+#    constraint model put 86.9% of its answers on ONE molecule and beat the
+#    untrained baseline largely by out-guessing it: a constant string scores
+#    0.092 on the official split against that model's 0.136. Balanced mixing
+#    helps (the other two tasks penalise a policy that always emits a
+#    molecule), but this MUST be checked after training, not assumed --
+#    compare against the `constant` control row and the answer-diversity table
+#    in results/matrix/plots/official/summary.md. A multitask model that
+#    collapses on constraint has not learned constraint generation.
+#
+# 4. Completions average ~40 tokens out of 512: the model answers immediately
+#    without enumerating, which caps what counting and indexing can reach.
+#    This config does NOT fix that -- see the CoT diagnostic in the README.
+#    If multitask plateaus at single-task levels, this is the next lever.
+model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+
+# All three task families pooled into one training set.
+dataset_dirs:
+  - data/count
+  - data/index
+  - data/constraint
+# `balanced` truncates each task to the smallest so none dominates the averaged
+# gradient; `proportional` would use everything and let the largest task pull
+# hardest. Rows are shuffled, so batches mix tasks rather than arriving in runs.
+dataset_mix: balanced
+
+output_dir: outputs/multitask-qwen2.5-0.5b
+
+correctness_weight: 1.0
+format_weight: 0.2
+
+# Graded near-miss credit for counting (no effect on index/constraint, which
+# have no meaningful scalar distance).
+count_partial_credit: 0.15
+count_partial_tau: 3.0
+
+monitor_reward_groups: true
+monitor_log_every: 10
+
+grpo:
+  output_dir: outputs/multitask-qwen2.5-0.5b
+  per_device_train_batch_size: 16    # larger OOMs 64GB A100 (logits are batch x len x 152k vocab)
+  gradient_accumulation_steps: 16    # set to 4 on 4 GPUs
+  num_generations: 16
+  max_completion_length: 512
+  temperature: 1.0
+  top_p: 1.0
+  learning_rate: 1.0e-6
+  lr_scheduler_type: constant_with_warmup
+  warmup_steps: 20
+  # Three tasks share this budget, so it is larger than the single-task 500.
+  # ~16 s/step on one A100 puts 3000 steps near 13 h, inside train.slurm's 24 h.
+  max_steps: 3000
+  max_grad_norm: 1.0
+  beta: 0.0
+  bf16: true
+  gradient_checkpointing: true
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.25
+  vllm_max_model_length: 2048
+  logging_steps: 1
+  # Checkpoint often: the interesting question is whether the three tasks peak
+  # at different steps, which is what interference looks like in practice.
+  save_steps: 250
+  save_total_limit: 6
+  report_to: ["tensorboard"]
+  seed: 42

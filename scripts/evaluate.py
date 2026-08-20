@@ -82,6 +82,13 @@ def parse_args():
     p.add_argument("--out", type=Path, required=True, help="Output results JSON path")
     p.add_argument("--dump-samples", action="store_true",
                    help="Also write per-sample generations next to --out")
+    p.add_argument("--system-prompt-file", type=Path, default=None,
+                   help="DIAGNOSTIC ONLY: replace the official system prompt with "
+                        "the contents of this file. Results are then NOT "
+                        "comparable with the official benchmark protocol (which "
+                        "fixes the prompt) and must not be reported as benchmark "
+                        "numbers. Intended for questions like 'can the model "
+                        "count at all if asked to enumerate first?'")
     p.add_argument("--confidence", type=float, default=0.95,
                    help="Confidence level for the reported intervals (0.90/0.95/0.99)")
     p.add_argument("--bootstrap-samples", type=int, default=10000,
@@ -147,9 +154,16 @@ def main():
         from vllm import LLM, SamplingParams
 
         tokenizer = AutoTokenizer.from_pretrained(args.model)
+        system_prompt = SYSTEM_PROMPT
+        if args.system_prompt_file:
+            system_prompt = args.system_prompt_file.read_text()
+            logger.warning("DIAGNOSTIC RUN: system prompt replaced from %s — "
+                           "these numbers are NOT comparable with the official "
+                           "benchmark protocol and must not be reported as "
+                           "benchmark results", args.system_prompt_file)
         prompts = [
             tokenizer.apply_chat_template(
-                build_prompt(r["question"], SYSTEM_PROMPT),
+                build_prompt(r["question"], system_prompt),
                 tokenize=False,
                 add_generation_prompt=True,
             )
@@ -232,6 +246,8 @@ def main():
         "max_tokens": args.max_tokens,
         "seed": args.seed,
         "constant_answer": args.constant_answer,
+        # Non-null marks the result as a diagnostic, not a benchmark number.
+        "system_prompt_file": str(args.system_prompt_file) if args.system_prompt_file else None,
         "confidence": args.confidence,
         "avg_accuracy": avg_accuracy,
         "avg_accuracy_ci": list(bootstrap_ci(metrics_acc, args.confidence,

@@ -57,18 +57,61 @@ def parse_args():
     return args, overrides
 
 
-def build_dataset(dataset_dir: Path, split: str, system_prompt: str):
+def build_dataset(dataset_dirs, split: str, system_prompt: str,
+                  mix: str = "balanced", seed: int = 42):
+    """Build a (possibly multitask) GRPO dataset from one or more dataset dirs.
+
+    With several directories the tasks are pooled into one dataset. `mix`
+    controls the proportions:
+
+    * ``balanced``     -- every task contributes the same number of prompts
+      (truncated to the smallest task). This is the default because GRPO
+      averages gradients over a batch, so a task holding twice the share of the
+      data exerts twice the pull; with three tasks of unequal size the largest
+      would quietly dominate.
+    * ``proportional`` -- every directory contributes all of its prompts.
+
+    The pooled rows are shuffled, so each batch of prompts is a random mix of
+    tasks rather than a run of one task at a time -- consecutive same-task
+    batches would make the policy oscillate between tasks instead of finding
+    a shared optimum.
+    """
+    import random
+
     from datasets import Dataset
 
-    rows = read_jsonl(dataset_dir / f"{split}.jsonl")
+    if isinstance(dataset_dirs, (str, Path)):
+        dataset_dirs = [dataset_dirs]
+    dataset_dirs = [Path(d) for d in dataset_dirs]
+
+    per_dir = []
+    for d in dataset_dirs:
+        rows = read_jsonl(d / f"{split}.jsonl")
+        if not rows:
+            raise SystemExit(f"{d / f'{split}.jsonl'} is empty")
+        per_dir.append(rows)
+
+    if mix == "balanced" and len(per_dir) > 1:
+        n = min(len(rows) for rows in per_dir)
+        rng = random.Random(seed)
+        per_dir = [rng.sample(rows, n) for rows in per_dir]
+    elif mix not in ("balanced", "proportional"):
+        raise SystemExit(f"unknown dataset mix '{mix}' "
+                         "(expected 'balanced' or 'proportional')")
+
+    for d, rows in zip(dataset_dirs, per_dir):
+        logger.info("  %s [%s]: %d prompts", d, split, len(rows))
+
     records = []
-    for r in rows:
-        records.append({
-            "prompt": build_prompt(r["question"], system_prompt),
-            "task_type": r["task_type"],
-            "target": r.get("target"),
-            "constraints": r.get("constraints"),
-        })
+    for rows in per_dir:
+        for r in rows:
+            records.append({
+                "prompt": build_prompt(r["question"], system_prompt),
+                "task_type": r["task_type"],
+                "target": r.get("target"),
+                "constraints": r.get("constraints"),
+            })
+    random.Random(seed).shuffle(records)
     return Dataset.from_list(records)
 
 
@@ -82,7 +125,10 @@ def main():
         raise SystemExit("This project does full fine-tuning only — remove peft/lora config.")
 
     model_name = cfg.get("model_name_or_path", "Qwen/Qwen2.5-0.5B-Instruct")
-    dataset_dir = Path(cfg["dataset_dir"])
+    # `dataset_dirs` (list) pools several tasks into one multitask run;
+    # `dataset_dir` (single) remains supported for the single-task configs.
+    dataset_dirs = cfg.get("dataset_dirs") or [cfg["dataset_dir"]]
+    dataset_mix = cfg.get("dataset_mix", "balanced")
     system_prompt = cfg.get("system_prompt", SYSTEM_PROMPT)
 
     grpo_kwargs = dict(cfg.get("grpo", {}))
@@ -129,13 +175,17 @@ def main():
 
     grpo_config = GRPOConfig(**grpo_kwargs)
 
-    train_dataset = build_dataset(dataset_dir, cfg.get("train_split", "train"), system_prompt)
+    seed = int(grpo_kwargs.get("seed", 42))
+    train_dataset = build_dataset(dataset_dirs, cfg.get("train_split", "train"),
+                                  system_prompt, dataset_mix, seed)
     eval_dataset = None
     if grpo_kwargs.get("eval_strategy", "no") != "no":
-        eval_dataset = build_dataset(dataset_dir, cfg.get("val_split", "val"), system_prompt)
+        eval_dataset = build_dataset(dataset_dirs, cfg.get("val_split", "val"),
+                                     system_prompt, dataset_mix, seed)
 
     logger.info("Model: %s", model_name)
-    logger.info("Train dataset: %s (%d prompts)", dataset_dir, len(train_dataset))
+    logger.info("Train dataset: %s mix=%s (%d prompts total)",
+                dataset_dirs, dataset_mix, len(train_dataset))
     logger.info("Rewards: %s (weights %s)",
                 [f.__name__ for f in reward_funcs], grpo_config.reward_weights)
     logger.info("vLLM: use_vllm=%s mode=%s", grpo_config.use_vllm,
