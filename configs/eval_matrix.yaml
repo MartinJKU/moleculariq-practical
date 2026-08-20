@@ -54,11 +54,6 @@ models:
     path: outputs/constraint-qwen2.5-0.5b
     label: GRPO constraint
     task: constraint
-  # ONE model trained on all three families (configs/multitask.yaml). Tagged
-  # with no `task`, since every column is in-task for it.
-  multitask:
-    path: outputs/multitask-qwen2.5-0.5b
-    label: GRPO multitask
   count_aromatic:
     path: outputs/count-aromatic-ring-qwen2.5-0.5b
     label: GRPO count/arom.ring
@@ -106,13 +101,13 @@ groups:
     title: held-out generated val sets (greedy pass@1)
     subdir: heldout
     metric: avg_accuracy
-    models: [constant, baseline, count, count_graded, count_matched, index, constraint, multitask]
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint]
     evals:  [count_val, index_val, constraint_val]
   official:
     title: official MolecularIQ v0.0 benchmark (sampled pass@3)
     subdir: official
     metric: pass_at_3
-    models: [constant, baseline, count, count_graded, count_matched, index, constraint, multitask]
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint]
     evals:  [official_count, official_index, official_constraint]
   # Single-construct study kept separate from the overall-task comparison:
   # does the aromatic-ring specialist beat the general count model on aromatic
