@@ -1,0 +1,79 @@
+# GRPO on constraint generation, trained on REPAIRED constraint data.
+#
+#   sbatch slurm/train.slurm configs/constraint_fixed.yaml
+#
+# Why this exists
+# ---------------
+# The original constraint model is the weakest result in the study. It beats
+# the untrained baseline on the official split (0.136 vs 0.031 avg_accuracy)
+# but it is not doing constraint satisfaction: it places 86.9% of its answers
+# on a single molecule, and a constant string scores 0.092 on that same split.
+# It learned a better constant, not the task.
+#
+# The cause was in the data, not the algorithm. Two defects in
+# src/moleculariq_grpo/data.py, both now fixed:
+#
+#   1. VACUOUS CONSTRAINTS. `_build_constraint` could emit `>= 0`, which every
+#      valid molecule satisfies. Measured at ~16.5% of constraints whenever the
+#      anchor property value was 0. Now rejected outright (0.0% by Monte-Carlo
+#      over 20k draws).
+#   2. NO TRIVIALITY CAP. The `--max-zero-frac` cap that stops count/index
+#      reward-hacking was applied only to those tasks. A constraint anchored on
+#      a property the molecule has none of is satisfied by any molecule that
+#      also lacks it -- the same failure, uncapped. The cap now covers
+#      constraint tasks, using the anchor value rather than the answer.
+#
+# Regenerate the data with the fixed generator first:
+#   python scripts/create_datasets.py --task constraint --out data/constraint_fixed \
+#       --train-size 20000 --val-size 500 --seed 42 --max-zero-frac 0.08
+#
+# Then CHECK the repair worked before spending a training run, by measuring the
+# trivial floor directly on the new val set (CPU, no GPU, seconds):
+#   python scripts/evaluate.py --constant-answer '{"smiles": "CC=O"}' \
+#       --dataset data/constraint_fixed/val.jsonl \
+#       --out results/diag/constraint_fixed_constant.json
+#
+#   Old data: the constant control scored 0.530 -- statistically tied with every
+#   trained model. If the repaired set still gives the control anything close to
+#   that, do NOT train on it; tighten --max-zero-frac further and re-measure.
+#   The control score is the number to drive down.
+model_name_or_path: Qwen/Qwen2.5-0.5B-Instruct
+dataset_dir: data/constraint_fixed
+output_dir: outputs/constraint-fixed-qwen2.5-0.5b
+
+correctness_weight: 1.0
+format_weight: 0.2
+
+# Constraint answers are molecules, not scalars, so there is no meaningful
+# "near miss" distance -- partial credit stays off here. Inventing one would
+# re-open a reward-hacking surface on the one task that already had one.
+count_partial_credit: 0.0
+
+monitor_reward_groups: true
+monitor_log_every: 10
+
+grpo:
+  output_dir: outputs/constraint-fixed-qwen2.5-0.5b
+  per_device_train_batch_size: 16    # larger OOMs 64GB A100 (logits are batch x len x 152k vocab)
+  gradient_accumulation_steps: 16    # set to 4 on 4 GPUs
+  num_generations: 16
+  max_completion_length: 512
+  temperature: 1.0
+  top_p: 1.0
+  learning_rate: 1.0e-6
+  lr_scheduler_type: constant_with_warmup
+  warmup_steps: 20
+  max_steps: 500
+  max_grad_norm: 1.0
+  beta: 0.0
+  bf16: true
+  gradient_checkpointing: true
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_gpu_memory_utilization: 0.25
+  vllm_max_model_length: 2048
+  logging_steps: 1
+  save_steps: 100
+  save_total_limit: 3
+  report_to: ["tensorboard"]
+  seed: 42

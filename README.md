@@ -340,25 +340,36 @@ diagnostics section against both configs to compare on real data.
 
 ## Known limitations
 
-**The generated `constraint` val set is substantially easier than the official
-benchmark and should not be read as a measure of constraint-satisfaction
-ability.** `_build_constraint` in `src/moleculariq_grpo/data.py` anchors each
-constraint on a real molecule's property value `v` and then loosens it with a
-random operator. When `v = 0` — common for constructs such as bridgehead atoms,
-E/Z double bonds and R/S stereocenters — *every* operator branch yields a
-constraint that any molecule with zero of that property satisfies, and roughly
-one in six becomes a vacuous `>= 0` that holds for every valid molecule. The
-zero-answer cap that prevents this for count/index (`--max-zero-frac`) is not
-applied to constraint tasks (`data.py:405`).
+**The generated `constraint` val set was substantially easier than the official
+benchmark, and the generator has since been repaired.** `_build_constraint` in
+`src/moleculariq_grpo/data.py` anchors each constraint on a real molecule's
+property value `v` and loosens it with a random operator. Two defects made the
+result reward-hackable:
 
-Consequence: the untrained baseline scores ≈0.54 on `constraint_val` but ≈0.06
-on the official `single_constraint_generation` split — a 9× gap, while count
-and index agree closely across both sources. The constant-answer control
-reproduces most of the 0.54, confirming the cause. Treat the official split as
-the result for constraint generation; the held-out constraint column is
-retained only as a training diagnostic. Fixing this properly means extending
-the zero-answer cap to constraints and rejecting vacuous constraints, then
-regenerating `data/constraint` and retraining.
+1. **Vacuous constraints.** When `v = 0` — common for constructs such as
+   bridgehead atoms, E/Z double bonds and R/S stereocenters — roughly one draw
+   in six became `>= 0`, which *every* valid molecule satisfies.
+2. **No triviality cap.** The `--max-zero-frac` cap that stops count/index
+   reward-hacking was applied only to those tasks, so questions anchored on a
+   property the molecule has none of were unlimited.
+
+Consequence, measured: the untrained baseline scored 0.540 on `constraint_val`
+against 0.06 on the official split — a 9× gap, while count and index agreed
+closely across both sources. The constant-answer control scored **0.530**,
+statistically tied with every trained model, confirming the cause. The
+constraint-trained model then concentrated **86.9%** of its answers on one
+molecule: GRPO found the shortcut and amplified it.
+
+**Both defects are now fixed.** `is_vacuous_constraint` rejects constraints
+satisfied by every molecule (Monte-Carlo over 20k draws: 16.5% → 0.0%), and the
+zero-answer cap now covers constraint tasks via the anchor value. Regenerate
+and retrain with `configs/constraint_fixed.yaml`; the header there carries the
+exact commands, including the constant-answer check to run **before** training
+— if the control still scores near 0.53 on the new data, the repair did not
+take and the cap needs tightening.
+
+Results produced before this fix (the `constraint` model, `constraint_val`)
+remain in the repository for comparison and are reported with this caveat.
 
 ## Comparing baseline vs single-task models (`compare_evals.py`)
 

@@ -54,6 +54,12 @@ models:
     path: outputs/constraint-qwen2.5-0.5b
     label: GRPO constraint
     task: constraint
+  # Same recipe, trained on constraint data regenerated with the repaired
+  # generator (no vacuous constraints, trivial questions capped).
+  constraint_fixed:
+    path: outputs/constraint-fixed-qwen2.5-0.5b
+    label: GRPO constraint (fixed data)
+    task: constraint
   count_aromatic:
     path: outputs/count-aromatic-ring-qwen2.5-0.5b
     label: GRPO count/arom.ring
@@ -69,6 +75,9 @@ evals:
     task: index
   constraint_val:
     dataset: data/constraint/val.jsonl
+    task: constraint
+  constraint_fixed_val:
+    dataset: data/constraint_fixed/val.jsonl
     task: constraint
   count_aromatic_val:
     dataset: data/count_aromatic_ring/val.jsonl
@@ -101,13 +110,13 @@ groups:
     title: held-out generated val sets (greedy pass@1)
     subdir: heldout
     metric: avg_accuracy
-    models: [constant, baseline, count, count_graded, count_matched, index, constraint]
-    evals:  [count_val, index_val, constraint_val]
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint, constraint_fixed]
+    evals:  [count_val, index_val, constraint_val, constraint_fixed_val]
   official:
     title: official MolecularIQ v0.0 benchmark (sampled pass@3)
     subdir: official
     metric: pass_at_3
-    models: [constant, baseline, count, count_graded, count_matched, index, constraint]
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint, constraint_fixed]
     evals:  [official_count, official_index, official_constraint]
   # Single-construct study kept separate from the overall-task comparison:
   # does the aromatic-ring specialist beat the general count model on aromatic
