@@ -135,6 +135,24 @@ def pass_at_k(rewards: list[float], k: int) -> float:
     return float(any(r > 0 for r in rewards[:k]))
 
 
+def completion_length_stats(texts_per_question: list[list[str]]) -> dict:
+    """Length of the generated completions, in characters.
+
+    Reported because response length is the cheapest signal for *whether the
+    model reasoned at all*. A model that answers immediately and one that
+    enumerates before answering differ by an order of magnitude here, and
+    accuracy alone cannot distinguish "tried to reason and failed" from
+    "ignored the instruction to reason".
+    """
+    lengths = [len(t) for texts in texts_per_question for t in texts]
+    if not lengths:
+        return {"n": 0}
+    s = sorted(lengths)
+    return {"n": len(s), "mean_chars": sum(s) / len(s),
+            "median_chars": s[len(s) // 2],
+            "p90_chars": s[int(0.9 * (len(s) - 1))], "max_chars": s[-1]}
+
+
 def main():
     args = parse_args()
     rows = load_rows(args)
@@ -284,6 +302,7 @@ def main():
         # is not recoverable from the mean score.
         "per_question_scores": metrics_acc,
         "per_question_pass_at_1": [pass_at_k(p["rewards"], 1) for p in per_question],
+        "completion_length": completion_length_stats(texts_per_question),
         "answer_diversity": answer_diversity(
             [p["extracted"][0] if p["extracted"] else None for p in per_question]),
         "by_task_type": {k: sum(v) / len(v) for k, v in sorted(by_task.items())},
@@ -307,6 +326,10 @@ def main():
                 format_ci(avg_accuracy, results["avg_accuracy_ci"]),
                 format_ci(results["pass_at_1"], results["pass_at_1_ci"]),
                 f" pass@3={results['pass_at_3']:.4f}" if "pass_at_3" in results else "")
+    clen = results["completion_length"]
+    logger.info("Completion length: mean %.0f chars, median %d, p90 %d, max %d",
+                clen.get("mean_chars", 0), clen.get("median_chars", 0),
+                clen.get("p90_chars", 0), clen.get("max_chars", 0))
     logger.info("Answer diversity: %d distinct / %d answers; most common %r "
                 "used %.1f%% of the time",
                 div["n_distinct"], div["n_answers"], div["top_answer"],
