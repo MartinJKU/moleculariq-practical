@@ -1,0 +1,138 @@
+# Model x dataset evaluation matrix for scripts/compare_evals.py
+#
+#   python scripts/compare_evals.py run  --config configs/eval_matrix.yaml
+#   python scripts/compare_evals.py plot --config configs/eval_matrix.yaml
+#   python scripts/compare_evals.py all  --config configs/eval_matrix.yaml
+#   # on Leonardo:  sbatch slurm/eval_matrix.slurm
+#
+# `models` and `evals` are registries; `groups` decides what gets compared and
+# plotted TOGETHER. Each group is its own model x eval cross product (so it
+# still shows cross-task generalization inside the group, e.g. the count model
+# on index questions) and renders its own heatmaps/bars into its own subfolder
+# of `plots_dir`. Results are cached flat as results/matrix/<model>__<eval>.json
+# and shared across groups, so a re-run only fills in missing cells.
+
+metric: avg_accuracy        # default headline metric (a group may override it)
+results_dir: results/matrix
+plots_dir: results/matrix/plots
+baseline: baseline          # key in `models` used as the reference for deltas
+
+# `task` links a model to an eval: a model is "in-task" on an eval when the two
+# tags match (those cells get outlined in the heatmaps and drive the
+# specialization-vs-generalization plot).
+models:
+  # Control: answers every question with one fixed string, no model and no GPU.
+  # Any real result must clear this floor to mean anything — on constraint
+  # generation a trivial molecule satisfies a large share of the constraints.
+  constant:
+    constant_answer: '{"smiles": "CC=O"}'
+    label: constant answer (control)
+  baseline:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+    label: Qwen 0.5B (untrained)
+  count:
+    path: outputs/count-qwen2.5-0.5b
+    label: GRPO count
+    task: count
+  # Same data and hyperparameters as `count`, but trained with the graded
+  # correctness reward (configs/count_graded.yaml). The A/B for whether fixing
+  # gradient sparsity translates into benchmark accuracy.
+  count_graded:
+    path: outputs/count-graded-qwen2.5-0.5b
+    label: GRPO count (graded)
+    task: count
+  # Graded reward + benchmark-matched training data + 2000 steps.
+  count_matched:
+    path: outputs/count-matched-qwen2.5-0.5b
+    label: GRPO count (matched)
+    task: count
+  index:
+    path: outputs/index-qwen2.5-0.5b
+    label: GRPO index
+    task: index
+  constraint:
+    path: outputs/constraint-qwen2.5-0.5b
+    label: GRPO constraint
+    task: constraint
+  # Same recipe, trained on constraint data regenerated with the repaired
+  # generator (no vacuous constraints, trivial questions capped).
+  constraint_fixed:
+    path: outputs/constraint-fixed-qwen2.5-0.5b
+    label: GRPO constraint (fixed data)
+    task: constraint
+  count_aromatic:
+    path: outputs/count-aromatic-ring-qwen2.5-0.5b
+    label: GRPO count/arom.ring
+    task: count_aromatic
+
+evals:
+  # --- held-out questions from our generated datasets (greedy pass@1) --------
+  count_val:
+    dataset: data/count/val.jsonl
+    task: count
+  index_val:
+    dataset: data/index/val.jsonl
+    task: index
+  constraint_val:
+    dataset: data/constraint/val.jsonl
+    task: constraint
+  constraint_fixed_val:
+    dataset: data/constraint_fixed/val.jsonl
+    task: constraint
+  count_aromatic_val:
+    dataset: data/count_aromatic_ring/val.jsonl
+    task: count_aromatic
+  # --- official MolecularIQ v0.0 benchmark splits (paper protocol: pass@3) ----
+  # Needs the benchmark in $HF_HOME: run scripts/download_assets.sh on a login
+  # node first (compute nodes are offline).
+  official_count:
+    dataset: ml-jku/moleculariq-v0.0
+    split: single_count
+    task: count
+    n: 3
+    temperature: 1.0
+  official_index:
+    dataset: ml-jku/moleculariq-v0.0
+    split: single_index
+    task: index
+    n: 3
+    temperature: 1.0
+  official_constraint:
+    dataset: ml-jku/moleculariq-v0.0
+    split: single_constraint_generation
+    task: constraint
+    n: 3
+    temperature: 1.0
+
+# Each group -> its own comparison + its own folder under plots_dir.
+groups:
+  heldout:
+    title: held-out generated val sets (greedy pass@1)
+    subdir: heldout
+    metric: avg_accuracy
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint, constraint_fixed]
+    evals:  [count_val, index_val, constraint_val, constraint_fixed_val]
+  official:
+    title: official MolecularIQ v0.0 benchmark (sampled pass@3)
+    subdir: official
+    metric: pass_at_3
+    models: [constant, baseline, count, count_graded, count_matched, index, constraint, constraint_fixed]
+    evals:  [official_count, official_index, official_constraint]
+  # Single-construct study kept separate from the overall-task comparison:
+  # does the aromatic-ring specialist beat the general count model on aromatic
+  # rings, and does it still handle general counting?
+  aromatic_ring:
+    title: single-construct study — counting aromatic rings
+    subdir: aromatic_ring
+    metric: avg_accuracy
+    models: [constant, baseline, count, count_aromatic]
+    evals:  [count_aromatic_val, count_val]
+
+# Defaults applied to every eval above (per-eval keys override them).
+# Any of: split, n, temperature, top_p, limit, features, max_tokens,
+# max_model_len, gpu_mem_util, tensor_parallel, dtype, seed, dump_samples.
+eval_defaults:
+  n: 1
+  temperature: 0.0          # greedy pass@1 (official_* evals override to n:3)
+  limit: null               # e.g. 500 for a quicker first pass over the matrix
+  seed: 0

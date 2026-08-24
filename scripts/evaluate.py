@@ -7,7 +7,9 @@ Works against:
 
 Scoring uses the official extraction function + symbolic verifier — identical
 to the training reward and the official harness. Reports avg_accuracy,
-pass@1 / pass@k (with --n > 1), plus per-feature and per-complexity breakdowns.
+pass@1 / pass@k (with --n > 1), each with a confidence interval, plus
+per-feature and per-complexity breakdowns and answer-diversity statistics that
+expose a degenerate (constant-answer) policy.
 
 Examples
 --------
@@ -23,6 +25,11 @@ python scripts/evaluate.py --model outputs/count-qwen2.5-0.5b \
 # Baseline comparison (untrained model):
 python scripts/evaluate.py --model Qwen/Qwen2.5-0.5B-Instruct \
     --dataset data/count/val.jsonl --out results/count_val_baseline.json
+
+# Control baseline: one fixed answer for every question, no model and no GPU.
+# Establishes the score reachable without reading the question at all.
+python scripts/evaluate.py --constant-answer '{"smiles": "CC=O"}' \
+    --dataset data/constraint/val.jsonl --out results/constraint_val_constant.json
 """
 import argparse
 import json
@@ -36,6 +43,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from moleculariq_grpo.extraction import extract_moleculariq_answer  # noqa: E402
 from moleculariq_grpo.prompts import SYSTEM_PROMPT, build_prompt  # noqa: E402
 from moleculariq_grpo.rewards import score_answer  # noqa: E402
+from moleculariq_grpo.stats import (  # noqa: E402
+    answer_diversity, bootstrap_ci, format_ci, wilson_interval,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("evaluate")
@@ -44,7 +54,9 @@ logger = logging.getLogger("evaluate")
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--model", required=True, help="HF model name or local checkpoint dir")
+    p.add_argument("--model", default=None,
+                   help="HF model name or local checkpoint dir "
+                        "(not needed with --constant-answer)")
     p.add_argument("--dataset", required=True,
                    help="Path to a .jsonl file, a dataset dir (uses --split .jsonl), "
                         "or an HF dataset id (e.g. ml-jku/moleculariq-v0.0)")
@@ -70,7 +82,28 @@ def parse_args():
     p.add_argument("--out", type=Path, required=True, help="Output results JSON path")
     p.add_argument("--dump-samples", action="store_true",
                    help="Also write per-sample generations next to --out")
-    return p.parse_args()
+    p.add_argument("--system-prompt-file", type=Path, default=None,
+                   help="DIAGNOSTIC ONLY: replace the official system prompt with "
+                        "the contents of this file. Results are then NOT "
+                        "comparable with the official benchmark protocol (which "
+                        "fixes the prompt) and must not be reported as benchmark "
+                        "numbers. Intended for questions like 'can the model "
+                        "count at all if asked to enumerate first?'")
+    p.add_argument("--confidence", type=float, default=0.95,
+                   help="Confidence level for the reported intervals (0.90/0.95/0.99)")
+    p.add_argument("--bootstrap-samples", type=int, default=10000,
+                   help="Resamples for the bootstrap CI on avg_accuracy")
+    p.add_argument("--constant-answer", default=None,
+                   help="Skip the model entirely and score this fixed string for "
+                        "every question (control baseline). Quantifies how much of "
+                        "a score is reachable without reading the question, e.g. "
+                        "--constant-answer '{\"smiles\": \"CC=O\"}'")
+    args = p.parse_args()
+    if args.model is None and args.constant_answer is None:
+        p.error("--model is required unless --constant-answer is given")
+    if args.model is None:
+        args.model = f"constant:{args.constant_answer}"
+    return args
 
 
 def load_rows(args) -> list[dict]:
@@ -102,41 +135,99 @@ def pass_at_k(rewards: list[float], k: int) -> float:
     return float(any(r > 0 for r in rewards[:k]))
 
 
+def completion_length_stats(texts_per_question: list[list[str]]) -> dict:
+    """Length of the generated completions, in characters.
+
+    Reported because response length is the cheapest signal for *whether the
+    model reasoned at all*. A model that answers immediately and one that
+    enumerates before answering differ by an order of magnitude here, and
+    accuracy alone cannot distinguish "tried to reason and failed" from
+    "ignored the instruction to reason".
+    """
+    lengths = [len(t) for texts in texts_per_question for t in texts]
+    if not lengths:
+        return {"n": 0}
+    s = sorted(lengths)
+    return {"n": len(s), "mean_chars": sum(s) / len(s),
+            "median_chars": s[len(s) // 2],
+            "p90_chars": s[int(0.9 * (len(s) - 1))], "max_chars": s[-1]}
+
+
 def main():
     args = parse_args()
     rows = load_rows(args)
     logger.info("Evaluating %s on %d questions (%s, split=%s, n=%d, T=%g)",
                 args.model, len(rows), args.dataset, args.split, args.n, args.temperature)
 
-    from transformers import AutoTokenizer
-    from vllm import LLM, SamplingParams
+    if args.constant_answer is not None:
+        # Control baseline: no model, no GPU. Answering every question with one
+        # fixed string measures the score reachable without reading the
+        # question at all -- the floor any real result must clear to be
+        # meaningful. See README "Control baseline".
+        logger.info("CONTROL RUN: answering every question with %r",
+                    args.constant_answer)
+        texts_per_question = [[args.constant_answer] * args.n for _ in rows]
+    else:
+        # Fail early and legibly on a login node. Without a visible GPU vLLM
+        # gets an empty device string and dies deep inside its config layer
+        # ("Device string must not be empty"), which does not hint at the
+        # actual cause. Only model runs need a GPU; --constant-answer does not.
+        #
+        # This probe must NOT use torch.cuda.is_available(): that initializes
+        # CUDA in this process, and vLLM then forks its engine subprocess,
+        # which dies with "Cannot re-initialize CUDA in forked subprocess".
+        # Loading the driver library only resolves symbols — it creates no
+        # CUDA context, so it is safe to do before a fork.
+        import ctypes
+        try:
+            ctypes.CDLL("libcuda.so.1")
+            no_gpu = False
+        except OSError:
+            no_gpu = True
+        if no_gpu:
+            raise SystemExit(
+                "No CUDA device visible (libcuda.so.1 not loadable) — vLLM "
+                "cannot run here.\n"
+                "  Leonardo login nodes have no GPU; submit to a compute node:\n"
+                "    sbatch --time=00:30:00 slurm/eval.slurm <the same arguments>")
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    prompts = [
-        tokenizer.apply_chat_template(
-            build_prompt(r["question"], SYSTEM_PROMPT),
-            tokenize=False,
-            add_generation_prompt=True,
+        from transformers import AutoTokenizer
+        from vllm import LLM, SamplingParams
+
+        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        system_prompt = SYSTEM_PROMPT
+        if args.system_prompt_file:
+            system_prompt = args.system_prompt_file.read_text()
+            logger.warning("DIAGNOSTIC RUN: system prompt replaced from %s — "
+                           "these numbers are NOT comparable with the official "
+                           "benchmark protocol and must not be reported as "
+                           "benchmark results", args.system_prompt_file)
+        prompts = [
+            tokenizer.apply_chat_template(
+                build_prompt(r["question"], system_prompt),
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            for r in rows
+        ]
+
+        llm = LLM(
+            model=args.model,
+            dtype=args.dtype,
+            max_model_len=args.max_model_len,
+            gpu_memory_utilization=args.gpu_mem_util,
+            tensor_parallel_size=args.tensor_parallel,
+            seed=args.seed,
         )
-        for r in rows
-    ]
-
-    llm = LLM(
-        model=args.model,
-        dtype=args.dtype,
-        max_model_len=args.max_model_len,
-        gpu_memory_utilization=args.gpu_mem_util,
-        tensor_parallel_size=args.tensor_parallel,
-        seed=args.seed,
-    )
-    sampling = SamplingParams(
-        n=args.n,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        max_tokens=args.max_tokens,
-        seed=args.seed,
-    )
-    outputs = llm.generate(prompts, sampling)
+        sampling = SamplingParams(
+            n=args.n,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            max_tokens=args.max_tokens,
+            seed=args.seed,
+        )
+        outputs = llm.generate(prompts, sampling)
+        texts_per_question = [[o.text for o in out.outputs] for out in outputs]
 
     per_question = []
     metrics_acc = []
@@ -144,8 +235,7 @@ def main():
     by_bin = defaultdict(list)
     by_task = defaultdict(list)
 
-    for row, out in zip(rows, outputs):
-        texts = [o.text for o in out.outputs]
+    for row, texts in zip(rows, texts_per_question):
         rewards = [
             score_answer(t, row.get("task_type"),
                          target=row.get("target"),
@@ -179,6 +269,12 @@ def main():
         for p in per_question:
             f.write(json.dumps(p) + "\n")
 
+    avg_accuracy = sum(metrics_acc) / n_q
+    pass1_hits = sum(pass_at_k(p["rewards"], 1) for p in per_question)
+    # Every headline number is an estimate from a finite question sample, so it
+    # is reported with an interval: bootstrap over questions for avg_accuracy
+    # (per-question scores are fractional when --n > 1), Wilson for the
+    # strictly binomial pass@k.
     results = {
         "model": args.model,
         "dataset": args.dataset,
@@ -189,23 +285,59 @@ def main():
         "temperature": args.temperature,
         "top_p": args.top_p,
         "max_tokens": args.max_tokens,
-        "avg_accuracy": sum(metrics_acc) / n_q,
-        "pass_at_1": sum(pass_at_k(p["rewards"], 1) for p in per_question) / n_q,
+        "seed": args.seed,
+        "constant_answer": args.constant_answer,
+        # Non-null marks the result as a diagnostic, not a benchmark number.
+        "system_prompt_file": str(args.system_prompt_file) if args.system_prompt_file else None,
+        "confidence": args.confidence,
+        "avg_accuracy": avg_accuracy,
+        "avg_accuracy_ci": list(bootstrap_ci(metrics_acc, args.confidence,
+                                             args.bootstrap_samples, args.seed)),
+        "pass_at_1": pass1_hits / n_q,
+        "pass_at_1_ci": list(wilson_interval(pass1_hits, n_q, args.confidence)),
+        # Per-question scores, kept so downstream tooling can run *paired*
+        # significance tests between models without re-reading the sample dump.
+        # pass@k is stored as its own per-question 0/1 vector: a paired test
+        # must be run on the same quantity that is being reported, and pass@k
+        # is not recoverable from the mean score.
+        "per_question_scores": metrics_acc,
+        "per_question_pass_at_1": [pass_at_k(p["rewards"], 1) for p in per_question],
+        "completion_length": completion_length_stats(texts_per_question),
+        "answer_diversity": answer_diversity(
+            [p["extracted"][0] if p["extracted"] else None for p in per_question]),
         "by_task_type": {k: sum(v) / len(v) for k, v in sorted(by_task.items())},
         "by_features": {k: sum(v) / len(v) for k, v in sorted(by_features.items())},
         "by_complexity_bin": {k: sum(v) / len(v) for k, v in sorted(by_bin.items())},
     }
-    if args.n >= 3:
-        results["pass_at_3"] = sum(pass_at_k(p["rewards"], 3) for p in per_question) / n_q
-    if args.n >= 5:
-        results["pass_at_5"] = sum(pass_at_k(p["rewards"], 5) for p in per_question) / n_q
+    for k in (3, 5):
+        if args.n >= k:
+            per_q = [pass_at_k(p["rewards"], k) for p in per_question]
+            hits = sum(per_q)
+            results[f"pass_at_{k}"] = hits / n_q
+            results[f"pass_at_{k}_ci"] = list(
+                wilson_interval(hits, n_q, args.confidence))
+            results[f"per_question_pass_at_{k}"] = per_q
 
     with open(args.out, "w") as f:
         json.dump(results, f, indent=2)
 
-    logger.info("Results: avg_accuracy=%.4f pass@1=%.4f%s",
-                results["avg_accuracy"], results["pass_at_1"],
+    div = results["answer_diversity"]
+    logger.info("Results: avg_accuracy=%s pass@1=%s%s",
+                format_ci(avg_accuracy, results["avg_accuracy_ci"]),
+                format_ci(results["pass_at_1"], results["pass_at_1_ci"]),
                 f" pass@3={results['pass_at_3']:.4f}" if "pass_at_3" in results else "")
+    clen = results["completion_length"]
+    logger.info("Completion length: mean %.0f chars, median %d, p90 %d, max %d",
+                clen.get("mean_chars", 0), clen.get("median_chars", 0),
+                clen.get("p90_chars", 0), clen.get("max_chars", 0))
+    logger.info("Answer diversity: %d distinct / %d answers; most common %r "
+                "used %.1f%% of the time",
+                div["n_distinct"], div["n_answers"], div["top_answer"],
+                100 * div["top_share"])
+    if div["top_share"] > 0.5:
+        logger.warning("DEGENERATE OUTPUT: one answer covers %.0f%% of responses "
+                       "-- treat this accuracy as a lower bound on task ability, "
+                       "not evidence of it", 100 * div["top_share"])
     logger.info("Per task type: %s", results["by_task_type"])
     logger.info("Wrote %s (per-sample: %s)", args.out, samples_path)
 

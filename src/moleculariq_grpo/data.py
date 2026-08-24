@@ -250,22 +250,38 @@ def _anchor_property_value(mqd: MolecularIQD, smiles: str, prop: str) -> Any:
     return mqd.compute_property(smiles, prop)
 
 
-def _build_constraint(
-    rng: random.Random, prop: str, value: Any
-) -> Optional[dict]:
-    """Build a constraint dict the anchor molecule satisfies."""
-    if isinstance(value, bool):
-        return {"property": prop, "operator": "=", "value": int(value)}
+def is_vacuous_constraint(constraint: dict) -> bool:
+    """True if *every* valid molecule satisfies the constraint.
 
-    if isinstance(value, str):
-        if not value:
-            return None
-        return {"property": prop, "operator": "=", "value": value}
+    MolecularIQ count properties are non-negative, so ``>= 0`` asks nothing of
+    the answer: any parseable molecule scores 1.0. Such questions teach a
+    generative policy that emitting anything is correct, which is precisely the
+    reward-hacking surface that let a constant string score 0.53 on our
+    generated constraint set.
+    """
+    op = constraint.get("operator")
+    value = constraint.get("value")
+    if op == ">=" and isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value <= 0
+    if op == "range":
+        lo = constraint.get("min_value")
+        if isinstance(lo, (int, float)) and lo <= 0:
+            # A range anchored at 0 is only vacuous if it also has no upper
+            # bound; the generator always sets a finite, small max_value, so
+            # this is here to stay correct if that ever changes.
+            hi = constraint.get("max_value")
+            return hi is None
+    return False
 
-    if not isinstance(value, (int, float)):
-        return None
 
-    v = int(value) if float(value).is_integer() else float(value)
+# How many times to resample the operator before giving up on a property.
+# Vacuous constraints arise only from `>=` against a small anchor value, so a
+# handful of draws is plenty.
+_VACUOUS_RETRIES = 8
+
+
+def _sample_numeric_constraint(rng: random.Random, prop: str, v) -> Optional[dict]:
+    """One draw of an operator + loosened bound around the anchor value ``v``."""
     op = rng.choice(_NUMERIC_OPERATORS)
     delta = max(1, int(abs(v) * 0.3))
 
@@ -292,6 +308,34 @@ def _build_constraint(
     }
 
 
+def _build_constraint(
+    rng: random.Random, prop: str, value: Any
+) -> Optional[dict]:
+    """Build a constraint dict the anchor molecule satisfies.
+
+    Rejects vacuous constraints (see :func:`is_vacuous_constraint`) by
+    resampling the operator, and gives up on the property if every draw is
+    vacuous, so the row is regenerated rather than silently trivial.
+    """
+    if isinstance(value, bool):
+        return {"property": prop, "operator": "=", "value": int(value)}
+
+    if isinstance(value, str):
+        if not value:
+            return None
+        return {"property": prop, "operator": "=", "value": value}
+
+    if not isinstance(value, (int, float)):
+        return None
+
+    v = int(value) if float(value).is_integer() else float(value)
+    for _ in range(_VACUOUS_RETRIES):
+        constraint = _sample_numeric_constraint(rng, prop, v)
+        if constraint is not None and not is_vacuous_constraint(constraint):
+            return constraint
+    return None
+
+
 def _constraint_row(
     mqd: MolecularIQD,
     rng: random.Random,
@@ -303,6 +347,7 @@ def _constraint_row(
     smiles = mol["smiles"]
     chosen = rng.sample(constructs, min(num_items, len(constructs)))
     constraint_dicts: list[dict] = []
+    zero_anchored = False
 
     for construct in chosen:
         prop = rng.choice(cmap[construct])
@@ -312,6 +357,13 @@ def _constraint_row(
             return None
         if value is None or isinstance(value, (list, dict)):
             return None
+        # An anchor value of 0 makes every operator branch satisfiable by any
+        # molecule that also lacks the property -- which is most molecules, for
+        # the exotic constructs (bridgehead atoms, E/Z bonds, stereocenters)
+        # where 0 is the common value. Flagged here so generate_split can cap
+        # the share of such questions, exactly as it does for count/index.
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0:
+            zero_anchored = True
         constraint = _build_constraint(rng, prop, value)
         if constraint is None:
             return None
@@ -347,6 +399,7 @@ def _constraint_row(
         ),
         "_target_dict": None,
         "_dedup_key": constraints_json,
+        "_zero_anchored": zero_anchored,
     }
 
 
@@ -402,15 +455,24 @@ def generate_split(
         if row is None or row["_dedup_key"] in seen:
             continue
 
+        # Cap trivially-satisfiable questions. For count/index that means a
+        # zero/empty answer; for constraint generation it means a constraint
+        # anchored on a property the molecule has none of, which any molecule
+        # lacking that property also satisfies. Both let a policy score without
+        # reasoning, so both are capped by the same fraction.
         if cfg.task in (TASK_COUNT, TASK_INDEX):
-            if _is_zero_answer(row["_target_dict"]):
-                if zero_answers >= cfg.max_zero_fraction * n_questions:
-                    continue
-                zero_answers += 1
+            trivial = _is_zero_answer(row["_target_dict"])
+        else:
+            trivial = bool(row.get("_zero_anchored"))
+        if trivial:
+            if zero_answers >= cfg.max_zero_fraction * n_questions:
+                continue
+            zero_answers += 1
 
         seen.add(row["_dedup_key"])
         row.pop("_target_dict")
         row.pop("_dedup_key")
+        row.pop("_zero_anchored", None)
         row["uid"] = f"{uid_prefix}_{len(rows):08d}"
         rows.append(row)
 
